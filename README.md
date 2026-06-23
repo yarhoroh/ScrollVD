@@ -71,7 +71,19 @@ offset per desktop and avoid moving windows that belong to a different one.
 | Pan via minimap | Click / drag inside the minimap |
 | Send a window to a cell | Right-click a cell → pick a window, **or** drag a window onto the cell |
 | Bring active window here | Tray menu → *Bring active window here* |
-| Reset all windows | Tray menu → *Reset window positions* |
+| Reset all windows | Tray menu / Settings → *Reset window positions* |
+
+## Your windows are never lost
+
+ScrollVD restores every window to its home position **automatically**:
+
+- **On startup** — any window left off-screen by a previous session is brought back.
+- **On exit** — all windows are returned to their original positions across every virtual desktop.
+
+You can also do it manually any time via the tray menu or **Settings → Reset window positions**.
+
+Right-click the **tray icon** (near the clock) for the main menu: enable/disable panning, toggle the
+minimap, *Bring active window here*, *Reset window positions*, open **Settings**, and **Exit**.
 
 ## Build from source
 
