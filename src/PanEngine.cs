@@ -68,6 +68,32 @@ internal sealed class PanEngine
     }
 
     /// <summary>
+    /// 1-based number of the current Windows virtual desktop, or 0 if unknown.
+    /// The public COM interface only exposes a GUID, so we match it against the
+    /// ordered desktop list Windows stores in the registry.
+    /// </summary>
+    public int CurrentDesktopNumber()
+    {
+        var id = CurrentDesktopId();
+        if (id == Guid.Empty) return 0;
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops");
+            if (key?.GetValue("VirtualDesktopIDs") is byte[] blob && blob.Length % 16 == 0)
+            {
+                for (int i = 0; i < blob.Length / 16; i++)
+                {
+                    var g = new Guid(blob.AsSpan(i * 16, 16).ToArray());
+                    if (g == id) return i + 1;
+                }
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>
     /// Begin a gesture: enumerate windows and record their current positions.
     /// GetWindowRect is called only here — once per gesture.
     /// </summary>
@@ -153,6 +179,36 @@ internal sealed class PanEngine
         Native.BringWindowToTop(hwnd);
         Native.SetForegroundWindow(hwnd);
         if (fgThread != 0 && fgThread != thisThread) Native.AttachThreadInput(thisThread, fgThread, false);
+    }
+
+    /// <summary>
+    /// Set of grid cells (col,row) that contain at least one window (by window centre).
+    /// Lets the minimap hint which cells are occupied without previewing each one.
+    /// </summary>
+    public HashSet<(int col, int row)> OccupiedCells()
+    {
+        var set = new HashSet<(int, int)>();
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        if (sw <= 0 || sh <= 0) return set;
+
+        int cols = (int)Math.Round(2.0 * _maxX / sw) + 1;
+        int rows = (int)Math.Round(2.0 * _maxY / sh) + 1;
+
+        var sb = new StringBuilder(64);
+        Native.EnumWindows((h, _) =>
+        {
+            if (!IsMovable(h, sb)) return true;
+            if (!Native.GetWindowRect(h, out var r)) return true;
+            int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+            int col = (int)Math.Floor((cx - vx - (double)_offX + _maxX) / sw);
+            int row = (int)Math.Floor((cy - vy - (double)_offY + _maxY) / sh);
+            if (col >= 0 && col < cols && row >= 0 && row < rows) set.Add((col, row));
+            return true;
+        }, IntPtr.Zero);
+        return set;
     }
 
     /// <summary>
@@ -319,10 +375,10 @@ internal sealed class PanEngine
     /// The single "reset" entry point used everywhere (startup, exit, tray menu,
     /// settings button): undo every desktop's pan, then rescue any off-screen window.
     /// </summary>
-    public void Reset()
+    public void Reset(bool allDesktops = false)
     {
         RestoreHome();
-        SnapOffScreenWindows();
+        SnapOffScreenWindows(allDesktops);
     }
 
     /// <summary>
@@ -391,24 +447,37 @@ internal sealed class PanEngine
     /// <summary>
     /// Safety net: if any window ended up outside the visible area, quietly bring it back.
     /// </summary>
-    private void SnapOffScreenWindows()
+    private void SnapOffScreenWindows(bool allDesktops = false)
     {
         int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
         int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
         int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
         int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
 
+        bool OffScreen(Native.RECT r) =>
+            r.right < vx + 50 || r.bottom < vy + 50 || r.left > vx + vw - 50 || r.top > vy + vh - 50;
+
         var sb = new StringBuilder(64);
         Native.EnumWindows((h, _) =>
         {
-            if (!IsMovable(h, sb)) return true;
-            if (!Native.GetWindowRect(h, out var r)) return true;
+            if (!IsMovable(h, sb, anyDesktop: allDesktops, includeMinimized: true)) return true;
 
-            bool offScreen = r.right  < vx + 50
-                          || r.bottom < vy + 50
-                          || r.left   > vx + vw - 50
-                          || r.top    > vy + vh - 50;
-            if (offScreen)
+            // Minimized: fix the restore rectangle so it doesn't reappear off-screen.
+            if (Native.IsIconic(h))
+            {
+                var wp = new Native.WINDOWPLACEMENT { length = 44 };
+                if (Native.GetWindowPlacement(h, ref wp) && OffScreen(wp.rcNormalPosition))
+                {
+                    var n = wp.rcNormalPosition;
+                    int w = n.right - n.left, ht = n.bottom - n.top;
+                    wp.rcNormalPosition = new Native.RECT { left = vx + 80, top = vy + 80, right = vx + 80 + w, bottom = vy + 80 + ht };
+                    Native.SetWindowPlacement(h, ref wp);
+                }
+                return true;
+            }
+
+            if (!Native.GetWindowRect(h, out var r)) return true;
+            if (OffScreen(r))
                 Native.SetWindowPos(h, IntPtr.Zero, vx + 80, vy + 80, 0, 0, MoveFlags);
             return true;
         }, IntPtr.Zero);

@@ -75,9 +75,9 @@ internal static class Program
 
         _engine = new PanEngine();
 
-        // Single reset entry point: on startup it rescues any window left off-screen
-        // by a previous (possibly crashed) session.
-        _engine.Reset();
+        // On startup, rescue any window left off-screen by a previous (possibly crashed)
+        // session — across every Windows virtual desktop.
+        _engine.Reset(allDesktops: true);
 
         _hookProc = MouseHook;
         _hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _hookProc, Native.GetModuleHandle(null), 0);
@@ -102,7 +102,7 @@ internal static class Program
             _timer.Stop();
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
             _tray.Visible = false;
-            _engine.Reset();
+            _engine.Reset(allDesktops: true);
         };
 
         Application.Run();
@@ -540,6 +540,7 @@ internal static class Program
         var miSettings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenSettings())
             { Font = new Font(menu.Font, FontStyle.Bold) };
         var miReset = new ToolStripMenuItem("Reset window positions", null, (_, _) => _engine.Reset());
+        var miResetAll = new ToolStripMenuItem("Reset window positions (all desktops)", null, (_, _) => _engine.Reset(allDesktops: true));
         var miExit = new ToolStripMenuItem("Exit", null, (_, _) => Application.Exit());
 
         menu.Items.Add(miSettings);
@@ -552,6 +553,7 @@ internal static class Program
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(miPull);
         menu.Items.Add(miReset);
+        menu.Items.Add(miResetAll);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(miExit);
 

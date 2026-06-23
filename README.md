@@ -36,6 +36,8 @@ No real Windows virtual desktops are created, so nothing is left behind when you
 | 🖱️ **Right-click to place** | Right-click a cell to pick any window (including minimized) and send it there. |
 | ✋ **Drag to throw** | Drag a window straight onto a minimap cell to move it into that region. |
 | 🧲 **Bring it to you** | Activating a window that lives on another cell pulls it onto the current screen. |
+| 🟦 **Occupied-cell hint** | Cells that contain at least one window are subtly highlighted on the minimap, so you can see what's where at a glance. |
+| 🔢 **Desktop number** | The hover preview shows your current Windows virtual-desktop number in the centre. |
 
 <div align="center">
 <img src="docs/minimap.png" alt="ScrollVD minimap" width="360"><br>
@@ -81,10 +83,11 @@ offset per desktop and avoid moving windows that belong to a different one.
 
 ScrollVD restores every window to its home position **automatically**:
 
-- **On startup** — any window left off-screen by a previous session is brought back.
-- **On exit** — all windows are returned to their original positions across every virtual desktop.
+- **On startup** — any window left off-screen by a previous session is brought back (across every virtual desktop, including minimized windows whose restore position drifted off-screen).
+- **On exit** — all windows are returned to their positions across every virtual desktop.
 
-You can also do it manually any time via the tray menu or **Settings → Reset window positions**.
+You can also do it manually any time: tray menu → **Reset window positions** (current desktop) or
+**Reset window positions (all desktops)**, or **Settings → Reset window positions**.
 
 Right-click the **tray icon** (near the clock) for the main menu: enable/disable panning, toggle the
 minimap, *Bring active window here*, *Reset window positions*, open **Settings**, and **Exit**.

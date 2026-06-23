@@ -49,6 +49,10 @@ internal sealed class MinimapForm : Form
     // --- right-click cell popup: list of windows to drop into a cell ---
     private CellListPopup? _cellPopup;
 
+    // --- occupied-cell hint (throttled recompute) ---
+    private HashSet<(int col, int row)> _occupied = new();
+    private long _occupiedAt;
+
     // WS_EX_NOACTIVATE — clicks don't switch focus
     private const int WsExNoActivate = 0x08000000;
     // WS_EX_TOOLWINDOW — doesn't appear in Alt+Tab
@@ -175,6 +179,21 @@ internal sealed class MinimapForm : Form
         using var axisPen = new Pen(Color.FromArgb(50, 100, 140, 200), 0.7f);
         g.DrawLine(axisPen, ox, pad, ox, pad + mh);
         g.DrawLine(axisPen, pad, oy, pad + mw, oy);
+
+        // Faint hint on cells that contain at least one window (recomputed ~every 300 ms)
+        if (Environment.TickCount64 - _occupiedAt > 300)
+        {
+            _occupied = _engine.OccupiedCells();
+            _occupiedAt = Environment.TickCount64;
+        }
+        if (_occupied.Count > 0)
+        {
+            var (ocols, orows, ocw, och, opad) = CellLayout();
+            using var occFill = new SolidBrush(Color.FromArgb(38, 120, 180, 255));
+            foreach (var (c, r) in _occupied)
+                if (c < ocols && r < orows)
+                    g.FillRectangle(occFill, opad + c * ocw, opad + r * och, ocw, och);
+        }
 
         // Highlighted target cell while a window is dragged onto the minimap
         if (_hlCol >= 0 && _hlRow >= 0)
@@ -421,10 +440,14 @@ internal sealed class MinimapForm : Form
         var bmp = _engine.CaptureCellPreview(col, row, 280, 180);
         if (bmp is null) { _preview.HidePreview(); return; }
 
+        // Current Windows virtual desktop number (same for every cell)
+        int dn = _engine.CurrentDesktopNumber();
+        string label = dn > 0 ? dn.ToString() : "";
+
         // Place to the left of the minimap; fall back to the right if no room.
         int px = Bounds.Left - bmp.Width - 14;
         if (px < 0) px = Bounds.Right + 8;
-        _preview.ShowAt(bmp, new Point(px, Bounds.Top));
+        _preview.ShowAt(bmp, new Point(px, Bounds.Top), label);
     }
 
     // Popup list of windows to drop into cell (col,row) — a lightweight no-activate
