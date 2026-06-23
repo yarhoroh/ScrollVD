@@ -304,6 +304,11 @@ internal static class Program
         int stepX = StepFor(remX);
         int stepY = StepFor(remY);
         _engine.Shift(stepX, stepY);
+
+        // Safety net: if the offset didn't change (clamped at the canvas bound),
+        // the target is unreachable — stop instead of spinning forever.
+        var (nx, ny, _, _) = _engine.GetState();
+        if (nx == offX && ny == offY) EndScroll();
     }
 
     private static int StepFor(long rem)
@@ -396,16 +401,19 @@ internal static class Program
     /// <summary>Jump exactly one screen in the (ux, uy) direction.</summary>
     private static void TriggerSnapJump(int ux, int uy)
     {
-        var (offX, offY, _, _) = _engine.GetState();
+        var (offX, offY, maxX, maxY) = _engine.GetState();
         int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
         int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        if (sw <= 0 || sh <= 0) return;
 
         // Current grid cell (nearest multiple of sw/sh)
         int cellX = (int)Math.Round((double)offX / sw);
         int cellY = (int)Math.Round((double)offY / sh);
 
-        long tX = (long)(cellX + ux) * sw;
-        long tY = (long)(cellY + uy) * sh;
+        // Target cell, clamped to the canvas bounds so it's always reachable
+        // (otherwise the scroll animation would chase an offset Shift() can never reach).
+        long tX = Math.Clamp((long)(cellX + ux) * sw, -maxX, maxX);
+        long tY = Math.Clamp((long)(cellY + uy) * sh, -maxY, maxY);
 
         if (tX == offX && tY == offY) return; // already at the canvas edge
 
