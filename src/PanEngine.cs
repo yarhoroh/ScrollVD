@@ -108,6 +108,24 @@ internal sealed class PanEngine
     public void JumpTo(long targetOffX, long targetOffY)
         => Shift((int)(targetOffX - _offX), (int)(targetOffY - _offY));
 
+    /// <summary>
+    /// Place a single window onto grid cell (col,row), keeping the screen-relative
+    /// position it had at <paramref name="origLeft"/>/<paramref name="origTop"/>.
+    /// Does not change the global pan offset — only this one window moves.
+    /// </summary>
+    public void MoveWindowToCell(IntPtr hwnd, int col, int row, int origLeft, int origTop)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        // offset at which cell (col,row) is shown: leftmost cell at +maxX, rightmost at -maxX
+        long offViewX = _maxX - (long)col * sw;
+        long offViewY = _maxY - (long)row * sh;
+        int dx = (int)(_offX - offViewX);
+        int dy = (int)(_offY - offViewY);
+        Native.SetWindowPos(hwnd, IntPtr.Zero, origLeft + dx, origTop + dy, 0, 0, MoveFlags);
+    }
+
     public void EndGesture()
     {
         _gesture.Clear();

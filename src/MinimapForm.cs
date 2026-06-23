@@ -39,6 +39,9 @@ internal sealed class MinimapForm : Form
     private long _markerX, _markerY;   // позиция в координатах холста
     private long _markerUntil;         // TickCount64, до которого метку рисуем
 
+    // --- highlighted cell while dragging a window onto the minimap (-1 = none) ---
+    private int _hlCol = -1, _hlRow = -1;
+
     // WS_EX_NOACTIVATE — клики не переключают фокус
     private const int WsExNoActivate = 0x08000000;
     // WS_EX_TOOLWINDOW — не попадает в Alt+Tab
@@ -166,6 +169,20 @@ internal sealed class MinimapForm : Form
         g.DrawLine(axisPen, ox, pad, ox, pad + mh);
         g.DrawLine(axisPen, pad, oy, pad + mw, oy);
 
+        // Highlighted target cell while a window is dragged onto the minimap
+        if (_hlCol >= 0 && _hlRow >= 0)
+        {
+            var (cols, rows, cw, ch, padc) = CellLayout();
+            if (_hlCol < cols && _hlRow < rows)
+            {
+                var hr = new RectangleF(padc + _hlCol * cw, padc + _hlRow * ch, cw, ch);
+                using var hlFill = new SolidBrush(Color.FromArgb(90, 120, 220, 130));
+                using var hlPen = new Pen(Color.FromArgb(230, 150, 240, 160), 1.8f);
+                g.FillRectangle(hlFill, hr);
+                g.DrawRectangle(hlPen, hr.X, hr.Y, hr.Width, hr.Height);
+            }
+        }
+
         // Область видимости: viewport left = -offX в coord-пространстве холста
         float vpLeft = pad + (-offX + maxX) * sx;
         float vpTop = pad + (-offY + maxY) * sy;
@@ -210,6 +227,45 @@ internal sealed class MinimapForm : Form
         _markerX = canvasX;
         _markerY = canvasY;
         _markerUntil = Environment.TickCount64 + 1000;
+        Invalidate();
+    }
+
+    // Grid layout: number of cells per axis and cell size in client px.
+    private (int cols, int rows, float cw, float ch, int pad) CellLayout()
+    {
+        var (_, _, maxX, maxY) = _engine.GetState();
+        int pad = 6;
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        int cols = sw > 0 ? (int)Math.Round(2.0 * maxX / sw) + 1 : 3;
+        int rows = sh > 0 ? (int)Math.Round(2.0 * maxY / sh) + 1 : 3;
+        cols = Math.Max(1, cols);
+        rows = Math.Max(1, rows);
+        float cw = (ClientSize.Width - pad * 2) / (float)cols;
+        float ch = (ClientSize.Height - pad * 2) / (float)rows;
+        return (cols, rows, cw, ch, pad);
+    }
+
+    /// <summary>Hit-test a screen point against the 3x3 (or NxN) cell grid.</summary>
+    public bool TryGetCellAtScreen(Point screenPt, out int col, out int row)
+    {
+        col = row = -1;
+        if (!Visible) return false;
+        var c = PointToClient(screenPt);
+        var (cols, rows, cw, ch, pad) = CellLayout();
+        if (cw <= 0 || ch <= 0) return false;
+        if (c.X < pad || c.Y < pad || c.X >= pad + cw * cols || c.Y >= pad + ch * rows) return false;
+        col = Math.Clamp((int)((c.X - pad) / cw), 0, cols - 1);
+        row = Math.Clamp((int)((c.Y - pad) / ch), 0, rows - 1);
+        return true;
+    }
+
+    /// <summary>Highlight a cell (or pass -1,-1 to clear). Repaints only on change.</summary>
+    public void SetHighlight(int col, int row)
+    {
+        if (col == _hlCol && row == _hlRow) return;
+        _hlCol = col;
+        _hlRow = row;
         Invalidate();
     }
 

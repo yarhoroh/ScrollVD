@@ -115,6 +115,14 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT Point);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    public const uint GA_ROOT = 2;
+
     // ---- Виртуальные рабочие столы Windows (публичный COM-интерфейс) ----
     [ComImport]
     [Guid("a5cd92ff-29be-454c-8d04-d82879fb3f1b")]

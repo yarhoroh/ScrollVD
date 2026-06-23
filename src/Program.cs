@@ -18,6 +18,12 @@ internal static class Program
     private static Native.POINT _anchor;
     private static bool _pinning;
     private static long _edgeEnterTick;
+
+    // Drag a window onto the minimap to throw it to another grid cell
+    private static IntPtr _dragHwnd;
+    private static Native.RECT _dragOrigRect;
+    private static bool _dragActive;
+    private static bool _lmbWasDown;
     // private static long _edgeStartTick; // GRID-MODE-ONLY (testing): used only by smooth edge scroll
 
     // Прокрутка к окну: анимация ease-out
@@ -146,6 +152,7 @@ internal static class Program
     private static void OnTick(object? sender, EventArgs e)
     {
         DesktopSwitchTick();
+        DragToCellTick();
         ForegroundTick();
         ScrollAnimTick();
         EdgeTick();
@@ -174,6 +181,53 @@ internal static class Program
         EndEdge();
         _engine.OnDesktopSwitch(prev, id);
         _prevForeground = IntPtr.Zero;
+    }
+
+    // ====== Drag a window onto the minimap → throw it to a grid cell ======
+    private static void DragToCellTick()
+    {
+        bool lmb = Down(0x01);
+        Native.GetCursorPos(out var p);
+        var pt = new System.Drawing.Point(p.x, p.y);
+
+        if (lmb && !_lmbWasDown)
+        {
+            // LMB pressed: remember the top-level window under the cursor (if throwable)
+            var h = Native.GetAncestor(Native.WindowFromPoint(p), Native.GA_ROOT);
+            if (IsThrowable(h))
+            {
+                _dragHwnd = h;
+                Native.GetWindowRect(h, out _dragOrigRect);
+                _dragActive = true;
+            }
+        }
+        else if (lmb && _dragActive)
+        {
+            // Dragging: highlight the cell under the cursor while over the minimap
+            if (_minimap is { Visible: true } && _minimap.TryGetCellAtScreen(pt, out int col, out int row))
+                _minimap.SetHighlight(col, row);
+            else
+                _minimap?.SetHighlight(-1, -1);
+        }
+        else if (!lmb && _lmbWasDown && _dragActive)
+        {
+            // Released: if over a cell, move the window there with its original coords
+            if (_minimap is { Visible: true } && _minimap.TryGetCellAtScreen(pt, out int col, out int row))
+                _engine.MoveWindowToCell(_dragHwnd, col, row, _dragOrigRect.left, _dragOrigRect.top);
+            _minimap?.SetHighlight(-1, -1);
+            _dragActive = false;
+            _dragHwnd = IntPtr.Zero;
+        }
+
+        _lmbWasDown = lmb;
+    }
+
+    private static bool IsThrowable(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return false;
+        if (_minimap is not null && h == _minimap.Handle) return false;
+        if (_settings is { IsDisposed: false } && h == _settings.Handle) return false;
+        return IsCandidateForScroll(h);
     }
 
     // ====== Детект смены активного окна → красная метка на миникарте ======
