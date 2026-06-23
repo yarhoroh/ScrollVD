@@ -23,6 +23,9 @@ It lays your windows out across a **3 × 3 grid of off-screen regions** and lets
 between them — like having extra desktops, except it works by **moving the windows themselves**.
 No real Windows virtual desktops are created, so nothing is left behind when you quit.
 
+> Need more room? The grid size is configurable in **Settings → Canvas size (× screen)**:
+> ×1 = 3 × 3 (9 cells, default), ×2 = 5 × 5 (25 cells), ×3 = 7 × 7, and so on.
+
 ## Features
 
 | | |
