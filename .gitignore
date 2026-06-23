@@ -1,6 +1,8 @@
 # Build output
 [Bb]in/
 [Oo]bj/
+publish/
+*.zip
 
 # Visual Studio / Rider
 .vs/

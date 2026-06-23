@@ -4,47 +4,54 @@ using System.Runtime.InteropServices;
 namespace ScrollVD;
 
 /// <summary>
-/// Миникарта — полупрозрачное безрамочное окно поверх всех окон.
-/// Показывает весь виртуальный холст; прямоугольник = текущая область видимости.
+/// Minimap — a translucent borderless window on top of all windows.
+/// Shows the entire virtual canvas; the rectangle = current viewport.
 ///
-/// Управление:
-///   Клик               → переместить область видимости на эту точку холста
-///   Ctrl + drag        → переместить само окно миникарты
-///   Drag за правый нижний угол (12 px) → изменить размер окна
-///   Двойной тап MinimapHotkey → показать / скрыть
+/// Controls:
+///   Click              → move the viewport to this point on the canvas
+///   Ctrl + drag        → move the minimap window itself
+///   Drag the bottom-right corner (12 px) → resize the window
+///   Double-tap MinimapHotkey → show / hide
 /// </summary>
 internal sealed class MinimapForm : Form
 {
     private readonly PanEngine _engine;
 
-    // --- состояние перетаскивания окна ---
+    // --- window drag state ---
     private bool _winDrag;
     private Point _winDragCursor;
     private Point _winDragOrigin;
 
-    // --- состояние перетаскивания прямоугольника вьюпорта ---
+    // --- viewport rectangle drag state ---
     private bool _vpDrag;
     private Point _vpDragStart;
     private (long offX, long offY) _vpDragOrigin;
 
-    // --- состояние ресайза ---
+    // --- resize state ---
     private bool _resizing;
     private Point _resizeCursor;
     private Size _resizeOriginSize;
 
-    private const int ResizeGrip = 14; // px зоны ресайза в правом нижнем углу
-    private const int BorderR = 8;     // скругление
+    private const int ResizeGrip = 14; // px of the resize zone in the bottom-right corner
+    private const int BorderR = 8;     // corner rounding
 
-    // --- метка активного окна (красная точка на пару секунд) ---
-    private long _markerX, _markerY;   // позиция в координатах холста
-    private long _markerUntil;         // TickCount64, до которого метку рисуем
+    // --- active window marker (red dot for a couple of seconds) ---
+    private long _markerX, _markerY;   // position in canvas coordinates
+    private long _markerUntil;         // TickCount64 until which the marker is drawn
 
     // --- highlighted cell while dragging a window onto the minimap (-1 = none) ---
     private int _hlCol = -1, _hlRow = -1;
 
-    // WS_EX_NOACTIVATE — клики не переключают фокус
+    // --- hover preview popup of a cell's contents ---
+    private readonly PreviewForm _preview = new();
+    private int _prevCol = -1, _prevRow = -1;
+
+    // --- right-click cell popup: list of windows to drop into a cell ---
+    private CellListPopup? _cellPopup;
+
+    // WS_EX_NOACTIVATE — clicks don't switch focus
     private const int WsExNoActivate = 0x08000000;
-    // WS_EX_TOOLWINDOW — не попадает в Alt+Tab
+    // WS_EX_TOOLWINDOW — doesn't appear in Alt+Tab
     private const int WsExToolWindow = 0x00000080;
 
     public MinimapForm(PanEngine engine)
@@ -58,19 +65,19 @@ internal sealed class MinimapForm : Form
         ShowInTaskbar = false;
         DoubleBuffered = true;
 
-        // Размер
+        // Size
         int w = Config.Current.MinimapWidth;
         int h = Config.Current.MinimapHeight > 0 ? Config.Current.MinimapHeight : CalcAutoHeight(w);
         Size = new Size(w, h);
 
-        // Позиция: сохранённая или авто (правый верхний угол основного монитора)
+        // Position: saved or automatic (top-right corner of the primary monitor)
         StartPosition = FormStartPosition.Manual;
         if (Config.Current.MinimapX >= 0 && Config.Current.MinimapY >= 0)
             Location = new Point(Config.Current.MinimapX, Config.Current.MinimapY);
         else
             PlaceAutoTopRight();
 
-        // Иконка формы
+        // Form icon
         try
         {
             using var s = typeof(MinimapForm).Assembly.GetManifestResourceStream("ScrollVD.icon.ico");
@@ -78,14 +85,14 @@ internal sealed class MinimapForm : Form
         }
         catch { }
 
-        // Таймер перерисовки (~30 fps достаточно для миникарты)
+        // Repaint timer (~30 fps is enough for the minimap)
         var timer = new System.Windows.Forms.Timer { Interval = 33 };
         timer.Tick += (_, _) => Invalidate();
         timer.Start();
-        FormClosed += (_, _) => timer.Stop();
+        FormClosed += (_, _) => { timer.Stop(); _preview.Dispose(); _cellPopup?.Dispose(); };
 
-        // По «крестику»/Alt+F4 не закрываем, а прячем. Но при выходе из приложения
-        // (Application.Exit) закрытие пропускаем, иначе процесс зависнет в трее.
+        // On the close button / Alt+F4 we hide rather than close. But on application exit
+        // (Application.Exit) we skip the cancel, otherwise the process hangs in the tray.
         FormClosing += (_, e) =>
         {
             if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
@@ -102,7 +109,7 @@ internal sealed class MinimapForm : Form
         }
     }
 
-    // WM_MOUSEACTIVATE → MA_NOACTIVATE: клики не переключают фокус даже без WS_EX_NOACTIVATE
+    // WM_MOUSEACTIVATE → MA_NOACTIVATE: clicks don't switch focus even without WS_EX_NOACTIVATE
     private const int WmMouseActivate = 0x0021;
     private const int MaNoActivate = 3;
     protected override void WndProc(ref Message m)
@@ -111,7 +118,7 @@ internal sealed class MinimapForm : Form
         base.WndProc(ref m);
     }
 
-    // ====== Отрисовка ======
+    // ====== Rendering ======
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
@@ -121,7 +128,7 @@ internal sealed class MinimapForm : Form
 
         int w = ClientSize.Width, h = ClientSize.Height;
 
-        // Фон с закруглёнными краями
+        // Background with rounded corners
         using var bgPath = RoundRect(0, 0, w, h, BorderR);
         using var bgBrush = new LinearGradientBrush(
             new Rectangle(0, 0, w, h),
@@ -130,7 +137,7 @@ internal sealed class MinimapForm : Form
             90f);
         g.FillPath(bgBrush, bgPath);
 
-        // Тонкая акцентная рамка
+        // Thin accent border
         using var borderPen = new Pen(Color.FromArgb(70, 100, 200), 1.2f);
         g.DrawPath(borderPen, bgPath);
 
@@ -143,15 +150,15 @@ internal sealed class MinimapForm : Form
         int screenW = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
         int screenH = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
 
-        // Холст = [-maxX .. maxX], вьюпорт = screenW/screenH.
-        // Полный диапазон, видимый при любом offX: от -maxX до maxX+screenW.
-        // totalCW = 2*maxX + screenW гарантирует, что вьюпорт всегда внутри карты.
+        // Canvas = [-maxX .. maxX], viewport = screenW/screenH.
+        // Full range visible at any offX: from -maxX to maxX+screenW.
+        // totalCW = 2*maxX + screenW guarantees the viewport is always inside the map.
         float totalCW = 2f * maxX + screenW;
         float totalCH = 2f * maxY + screenH;
         float sx = mw / totalCW;
         float sy = mh / totalCH;
 
-        // Сетка холста — лёгкие линии
+        // Canvas grid — light lines
         using var gridPen = new Pen(Color.FromArgb(30, 70, 100, 160), 0.5f);
         int gridSteps = 4;
         for (int i = 1; i < gridSteps; i++)
@@ -162,7 +169,7 @@ internal sealed class MinimapForm : Form
             g.DrawLine(gridPen, pad, gy, pad + mw, gy);
         }
 
-        // «Нулевая» точка — крест
+        // Origin point — cross
         float ox = pad + maxX * sx;
         float oy = pad + maxY * sy;
         using var axisPen = new Pen(Color.FromArgb(50, 100, 140, 200), 0.7f);
@@ -183,22 +190,22 @@ internal sealed class MinimapForm : Form
             }
         }
 
-        // Область видимости: viewport left = -offX в coord-пространстве холста
+        // Viewport: viewport left = -offX in the canvas coordinate space
         float vpLeft = pad + (-offX + maxX) * sx;
         float vpTop = pad + (-offY + maxY) * sy;
         float vpW = screenW * sx;
         float vpH = screenH * sy;
         var vpRect = new RectangleF(vpLeft, vpTop, vpW, vpH);
 
-        // Заливка
+        // Fill
         using var vpFill = new SolidBrush(Color.FromArgb(55, 110, 180, 255));
         g.FillRectangle(vpFill, vpRect);
 
-        // Рамка области видимости
+        // Viewport border
         using var vpPen = new Pen(Color.FromArgb(220, 140, 190, 255), 1.5f);
         g.DrawRectangle(vpPen, vpRect.X, vpRect.Y, vpRect.Width, vpRect.Height);
 
-        // Метка активного окна — красная полупрозрачная точка на пару секунд
+        // Active window marker — a translucent red dot for a couple of seconds
         if (Environment.TickCount64 < _markerUntil)
         {
             float dotX = pad + (_markerX + maxX) * sx;
@@ -212,7 +219,7 @@ internal sealed class MinimapForm : Form
             g.FillEllipse(core, dotX - dr, dotY - dr, dr * 2, dr * 2);
         }
 
-        // Ручка ресайза (правый нижний угол)
+        // Resize grip (bottom-right corner)
         using var gripPen = new Pen(Color.FromArgb(100, 120, 160), 1f);
         for (int i = 2; i <= 4; i++)
         {
@@ -221,7 +228,15 @@ internal sealed class MinimapForm : Form
         }
     }
 
-    /// <summary>Показать красную метку в точке холста (canvasX, canvasY) на 2 секунды.</summary>
+    /// <summary>Re-assert the always-on-top status (other windows can steal it).</summary>
+    public void ReassertTopMost()
+    {
+        if (!Visible) return;
+        Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
+            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+    }
+
+    /// <summary>Show a red marker at the canvas point (canvasX, canvasY) for 2 seconds.</summary>
     public void ShowMarker(long canvasX, long canvasY)
     {
         _markerX = canvasX;
@@ -280,9 +295,9 @@ internal sealed class MinimapForm : Form
         return p;
     }
 
-    // ====== Вспомогательные методы ======
+    // ====== Helper methods ======
 
-    /// <summary>Вычисляет прямоугольник вьюпорта в координатах клиентской области.</summary>
+    /// <summary>Computes the viewport rectangle in client-area coordinates.</summary>
     private RectangleF GetViewportRect()
     {
         var (offX, offY, maxX, maxY) = _engine.GetState();
@@ -299,10 +314,13 @@ internal sealed class MinimapForm : Form
             screenH * sy);
     }
 
-    // ====== Взаимодействие ======
+    // ====== Interaction ======
     protected override void OnMouseDown(MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
+
+        _prevCol = _prevRow = -1;
+        _preview.HidePreview();
 
         bool ctrl = (Control.ModifierKeys & Keys.Control) != 0;
 
@@ -320,7 +338,7 @@ internal sealed class MinimapForm : Form
         }
         else if (GetViewportRect().Contains(e.X, e.Y))
         {
-            // Зажали на прямоугольнике вьюпорта → тащим его
+            // Pressed on the viewport rectangle → drag it
             _vpDrag = true;
             _vpDragStart = e.Location;
             var (offX, offY, _, _) = _engine.GetState();
@@ -328,7 +346,7 @@ internal sealed class MinimapForm : Form
             _engine.BeginGesture();
             Cursor = Cursors.SizeAll;
         }
-        // Иначе — клик вне VP → прыжок, обрабатывается в OnMouseUp
+        // Otherwise — click outside the VP → jump, handled in OnMouseUp
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -358,7 +376,7 @@ internal sealed class MinimapForm : Form
             float sx = (ClientSize.Width - pad * 2) / (2f * maxX + screenW2);
             float sy = (ClientSize.Height - pad * 2) / (2f * maxY + screenH2);
 
-            // Дельта в px миникарты → дельта в единицах холста
+            // Delta in minimap px → delta in canvas units
             int dx = e.X - _vpDragStart.X;
             int dy = e.Y - _vpDragStart.Y;
 
@@ -375,18 +393,76 @@ internal sealed class MinimapForm : Form
         }
         else
         {
-            // Подсказка курсора по зоне
+            // Cursor hint based on the zone
             if (InResizeZone(e.Location))
                 Cursor = Cursors.SizeNWSE;
             else if (GetViewportRect().Contains(e.X, e.Y))
                 Cursor = Cursors.SizeAll;
             else
                 Cursor = Cursors.Default;
+
+            UpdateHoverPreview(e.Location);
         }
+    }
+
+    // Show/refresh a thumbnail of the cell under the cursor (only when it changes).
+    private void UpdateHoverPreview(Point clientPt)
+    {
+        if (!TryGetCellAtScreen(PointToScreen(clientPt), out int col, out int row))
+        {
+            _prevCol = _prevRow = -1;
+            _preview.HidePreview();
+            return;
+        }
+        if (col == _prevCol && row == _prevRow) return; // same cell — keep current preview
+        _prevCol = col;
+        _prevRow = row;
+
+        var bmp = _engine.CaptureCellPreview(col, row, 280, 180);
+        if (bmp is null) { _preview.HidePreview(); return; }
+
+        // Place to the left of the minimap; fall back to the right if no room.
+        int px = Bounds.Left - bmp.Width - 14;
+        if (px < 0) px = Bounds.Right + 8;
+        _preview.ShowAt(bmp, new Point(px, Bounds.Top));
+    }
+
+    // Popup list of windows to drop into cell (col,row) — a lightweight no-activate
+    // topmost window, shown the same way as the hover preview.
+    private void ShowCellMenu(int col, int row)
+    {
+        if (_cellPopup is { IsDisposed: false }) _cellPopup.Close();
+        _cellPopup = new CellListPopup(_engine, col, row, Cursor.Position);
+        _cellPopup.Show();
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _prevCol = _prevRow = -1;
+        _preview.HidePreview();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (!Visible) { _prevCol = _prevRow = -1; _preview.HidePreview(); }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
+        // Right-click a cell → standard Windows menu of windows to move into that cell
+        if (e.Button == MouseButtons.Right)
+        {
+            if (TryGetCellAtScreen(PointToScreen(e.Location), out int col, out int row))
+            {
+                _preview.HidePreview();
+                _prevCol = _prevRow = -1;
+                ShowCellMenu(col, row);
+            }
+            return;
+        }
+
         if (e.Button != MouseButtons.Left) return;
 
         bool wasDragging = _winDrag || _resizing || _vpDrag;
@@ -395,7 +471,7 @@ internal sealed class MinimapForm : Form
         if (_resizing) { _resizing = false; SaveGeometry(); }
         if (_vpDrag) { _vpDrag = false; _engine.EndGesture(); Cursor = Cursors.Default; }
 
-        // Клик без drag → прыжок области видимости
+        // Click without drag → viewport jump
         if (!wasDragging)
             JumpViewport(e.Location);
     }
@@ -411,11 +487,11 @@ internal sealed class MinimapForm : Form
         int mw = ClientSize.Width - pad * 2;
         int mh = ClientSize.Height - pad * 2;
 
-        // Точка клика → координата холста
+        // Click point → canvas coordinate
         float cx = (miniPt.X - pad) / (float)mw * (2 * maxX + screenW) - maxX;
         float cy = (miniPt.Y - pad) / (float)mh * (2 * maxY + screenH) - maxY;
 
-        // Центрируем viewport на этой точке: offX = -(cx - screenW/2)
+        // Center the viewport on this point: offX = -(cx - screenW/2)
         long targetOffX = -(long)(cx - screenW / 2f);
         long targetOffY = -(long)(cy - screenH / 2f);
 

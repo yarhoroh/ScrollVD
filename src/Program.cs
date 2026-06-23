@@ -5,7 +5,7 @@ namespace ScrollVD;
 
 internal static class Program
 {
-    private const int TimerMs = 16; // ~60 кадров/с
+    private const int TimerMs = 16; // ~60 frames/sec
 
     private enum Mode { None, Grab, Edge, Scroll }
 
@@ -26,16 +26,19 @@ internal static class Program
     private static bool _lmbWasDown;
     // private static long _edgeStartTick; // GRID-MODE-ONLY (testing): used only by smooth edge scroll
 
-    // Прокрутка к окну: анимация ease-out
+    // Scroll-to-window: ease-out animation
     private static long _scrollTargetX, _scrollTargetY;
-    // Детект смены foreground-окна → метка на миникарте
+    // Detect foreground-window change -> marker on the minimap
     private static IntPtr _prevForeground;
-    private const double ScrollEase = 0.28; // доля оставшегося расстояния за тик
-    private const int ScrollMinStep = 6;    // минимальный шаг px
-    private const int ScrollDoneThresh = 3; // считаем завершённым, если осталось < N px
+    // Last real (user) foreground window — used by the tray "pull here" item,
+    // since opening the tray menu itself changes the foreground.
+    private static IntPtr _lastUserWindow;
+    private const double ScrollEase = 0.28; // fraction of remaining distance per tick
+    private const int ScrollMinStep = 6;    // minimum step px
+    private const int ScrollDoneThresh = 3; // treat as done when less than N px remain
 
-    // Двойной тап для миникарты
-    private static bool _snapEdgeDone; // в режиме сетки: уже прыгнули, ждём ухода курсора с края
+    // Double tap for the minimap
+    private static bool _snapEdgeDone; // grid mode: already jumped, waiting for the cursor to leave the edge
     private static Guid _currentDesktopId = Guid.Empty;
 
     private static bool _mmHotkeyWasDown;
@@ -56,9 +59,13 @@ internal static class Program
     [STAThread]
     static void Main()
     {
-        // Жёсткий запрет второго запуска: если копия уже работает — сразу выходим
+        // Hard single-instance guard: if a copy is already running, exit immediately
         using var mutex = new System.Threading.Mutex(true, @"Global\ScrollVD_SingleInstance", out bool isFirst);
         if (!isFirst) return;
+
+        // Keep the tray app alive if a stray UI exception happens (don't crash the process)
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, _) => { };
 
         ApplicationConfiguration.Initialize();
 
@@ -76,7 +83,7 @@ internal static class Program
         _hook = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, _hookProc, Native.GetModuleHandle(null), 0);
         if (_hook == IntPtr.Zero)
         {
-            MessageBox.Show("Не удалось установить хук мыши. Запустите приложение ещё раз.",
+            MessageBox.Show("Failed to install the mouse hook. Please start the application again.",
                 "ScrollVD", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
@@ -101,7 +108,7 @@ internal static class Program
         Application.Run();
     }
 
-    // ====== Режим захвата по горячей клавише ======
+    // ====== Hotkey grab mode ======
     private static IntPtr MouseHook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0 || _pinning)
@@ -117,7 +124,7 @@ internal static class Program
             {
                 var pt = Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam).pt;
 
-                // Прерываем прокрутку-к-окну если пользователь сам взял управление
+                // Interrupt scroll-to-window if the user takes control themselves
                 if (_mode == Mode.Scroll) EndScroll();
                 if (_mode == Mode.Edge) { _engine.EndGesture(); _mode = Mode.None; }
 
@@ -148,7 +155,7 @@ internal static class Program
         return Native.CallNextHookEx(_hook, nCode, wParam, lParam);
     }
 
-    // ====== Главный тик ======
+    // ====== Main tick ======
     private static void OnTick(object? sender, EventArgs e)
     {
         DesktopSwitchTick();
@@ -159,7 +166,7 @@ internal static class Program
         MinimapToggleTick();
     }
 
-    // ====== Детект смены виртуального рабочего стола ======
+    // ====== Detect virtual desktop change ======
     private static void DesktopSwitchTick()
     {
         var id = _engine.CurrentDesktopId();
@@ -167,7 +174,7 @@ internal static class Program
 
         if (_currentDesktopId == Guid.Empty)
         {
-            // Первое определение рабочего стола — просто запоминаем, ничего не сбрасываем
+            // First desktop detection: just remember it, don't reset anything
             _currentDesktopId = id;
             return;
         }
@@ -230,27 +237,37 @@ internal static class Program
         return IsCandidateForScroll(h);
     }
 
-    // ====== Детект смены активного окна → красная метка на миникарте ======
+    // ====== Active window changed: bring it from another cell + marker on the minimap ======
     private static void ForegroundTick()
     {
         if (!S.Enabled) return;
-        if (_minimap is not { Visible: true }) return;
 
         var fg = Native.GetForegroundWindow();
         if (fg == IntPtr.Zero || fg == _prevForeground) return;
         _prevForeground = fg;
 
-        // Игнорируем системные и безымянные окна (попап-меню, флайаут трея и т.п.)
+        // Ignore system and unnamed windows (popup menus, tray flyouts, etc.)
         if (!IsCandidateForScroll(fg)) return;
-        if (!Native.GetWindowRect(fg, out var r)) return;
+        _lastUserWindow = fg;
 
-        // Центр окна → координаты холста (вычитаем текущее смещение панорамы)
-        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
-        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        var (offX, offY, _, _) = _engine.GetState();
-        long cx = (r.left + r.right) / 2 - vx - offX;
-        long cy = (r.top + r.bottom) / 2 - vy - offY;
-        _minimap.ShowMarker(cx, cy);
+        // If the window is on another cell (selected from the taskbar but it's off-screen),
+        // bring it to the current screen. Only this window moves.
+        _engine.PullWindowToCurrentScreen(fg);
+
+        // Keep the minimap above the newly-activated window, then mark where it is
+        if (_minimap is { Visible: true })
+        {
+            _minimap.ReassertTopMost();
+            if (Native.GetWindowRect(fg, out var r))
+            {
+                int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+                int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+                var (offX, offY, _, _) = _engine.GetState();
+                long cx = (r.left + r.right) / 2 - vx - offX;
+                long cy = (r.top + r.bottom) / 2 - vy - offY;
+                _minimap.ShowMarker(cx, cy);
+            }
+        }
     }
 
     private static bool IsCandidateForScroll(IntPtr hWnd)
@@ -265,10 +282,10 @@ internal static class Program
             or "Progman" or "WorkerW"
             or "Windows.UI.Core.CoreWindow"
             or "XamlExplorerHostIslandWindow"
-            or "#32768"); // popup-меню
+            or "#32768"); // popup menu
     }
 
-    // ====== Анимация прокрутки (ease-out, используется прыжком по сетке) ======
+    // ====== Scroll animation (ease-out, used by the grid jump) ======
     private static void ScrollAnimTick()
     {
         if (_mode != Mode.Scroll) return;
@@ -301,7 +318,7 @@ internal static class Program
         if (_mode == Mode.Scroll) { _engine.EndGesture(); _mode = Mode.None; }
     }
 
-    // ====== Прокрутка у края (с ускорением или прыжком по сетке) ======
+    // ====== Edge scroll (with acceleration or grid jump) ======
     private static void EdgeTick()
     {
         if (!S.Enabled || !S.EdgeEnabled || _mode == Mode.Grab || IsGrabDown() || Down(0x01))
@@ -310,11 +327,11 @@ internal static class Program
             return;
         }
 
-        // Пока идёт анимация прокрутки — ждём завершения, dwell сбрасываем
+        // While the scroll animation is running, wait for it to finish and reset dwell
         if (_mode == Mode.Scroll)
         {
             _edgeEnterTick = 0;
-            return; // _snapEdgeDone не трогаем — курсор не уходил с края
+            return; // don't touch _snapEdgeDone — the cursor hasn't left the edge
         }
 
         Native.GetCursorPos(out var p);
@@ -376,21 +393,21 @@ internal static class Program
         // _engine.Shift(ux * (int)Math.Max(1, Math.Round(speed)), uy * (int)Math.Max(1, Math.Round(speed)));
     }
 
-    /// <summary>Прыгнуть ровно на один экран в направлении (ux, uy).</summary>
+    /// <summary>Jump exactly one screen in the (ux, uy) direction.</summary>
     private static void TriggerSnapJump(int ux, int uy)
     {
         var (offX, offY, _, _) = _engine.GetState();
         int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
         int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
 
-        // Текущая ячейка сетки (ближайший кратный sw/sh)
+        // Current grid cell (nearest multiple of sw/sh)
         int cellX = (int)Math.Round((double)offX / sw);
         int cellY = (int)Math.Round((double)offY / sh);
 
         long tX = (long)(cellX + ux) * sw;
         long tY = (long)(cellY + uy) * sh;
 
-        if (tX == offX && tY == offY) return; // уже у границы холста
+        if (tX == offX && tY == offY) return; // already at the canvas edge
 
         _scrollTargetX = tX;
         _scrollTargetY = tY;
@@ -402,10 +419,10 @@ internal static class Program
     {
         if (_mode == Mode.Edge) { _engine.EndGesture(); _mode = Mode.None; }
         _edgeEnterTick = 0;
-        _snapEdgeDone = false; // курсор ушёл — разрешить следующий прыжок
+        _snapEdgeDone = false; // cursor left — allow the next jump
     }
 
-    // ====== Двойной тап hotkey миникарты ======
+    // ====== Minimap hotkey double tap ======
     private static void MinimapToggleTick()
     {
         bool down = IsMinimapHotkeyDown();
@@ -431,7 +448,7 @@ internal static class Program
         _mmHotkeyWasDown = down;
     }
 
-    // ====== Хелперы клавиш ======
+    // ====== Key helpers ======
     private static bool Down(int vk) => (Native.GetAsyncKeyState(vk) & 0x8000) != 0;
 
     private static bool IsGrabDown()
@@ -470,22 +487,22 @@ internal static class Program
         return id == Guid.Empty || !S.DisabledDesktops.Contains(id);
     }
 
-    // ====== Трей ======
+    // ====== Tray ======
     private static void BuildTray()
     {
         var menu = new ContextMenuStrip();
 
-        _miEnabled = new ToolStripMenuItem("Включено", null, (_, _) =>
+        _miEnabled = new ToolStripMenuItem("Enabled", null, (_, _) =>
         {
             S.Enabled = !S.Enabled;
             if (!S.Enabled && _mode != Mode.None) { EndScroll(); EndEdge(); _engine.EndGesture(); _mode = Mode.None; }
             S.Save();
         });
 
-        _miEdge = new ToolStripMenuItem("Прокрутка у края экрана", null, (_, _) =>
+        _miEdge = new ToolStripMenuItem("Edge scrolling", null, (_, _) =>
         { S.EdgeEnabled = !S.EdgeEnabled; S.Save(); });
 
-        _miThisDesktop = new ToolStripMenuItem("Панорама на этом рабочем столе", null, (_, _) =>
+        _miThisDesktop = new ToolStripMenuItem("Panning on this desktop", null, (_, _) =>
         {
             var id = _engine.CurrentDesktopId();
             if (id == Guid.Empty) return;
@@ -493,16 +510,22 @@ internal static class Program
             S.Save();
         });
 
-        _miAutostart = new ToolStripMenuItem("Запускать с Windows", null, (_, _) =>
+        _miAutostart = new ToolStripMenuItem("Start with Windows", null, (_, _) =>
             Autostart.Set(!Autostart.IsEnabled()));
 
-        _miMinimap = new ToolStripMenuItem("Показать миникарту", null, (_, _) =>
+        _miMinimap = new ToolStripMenuItem("Show minimap", null, (_, _) =>
         { _minimap?.ToggleVisible(); UpdateMinimapTrayItem(); });
 
-        var miSettings = new ToolStripMenuItem("Настройки…", null, (_, _) => OpenSettings())
+        var miPull = new ToolStripMenuItem("Bring active window here", null, (_, _) =>
+        {
+            if (_lastUserWindow != IntPtr.Zero)
+                _engine.PullWindowToCurrentScreen(_lastUserWindow);
+        });
+
+        var miSettings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenSettings())
             { Font = new Font(menu.Font, FontStyle.Bold) };
-        var miReset = new ToolStripMenuItem("Сбросить позиции окон", null, (_, _) => _engine.Reset());
-        var miExit = new ToolStripMenuItem("Выход", null, (_, _) => Application.Exit());
+        var miReset = new ToolStripMenuItem("Reset window positions", null, (_, _) => _engine.Reset());
+        var miExit = new ToolStripMenuItem("Exit", null, (_, _) => Application.Exit());
 
         menu.Items.Add(miSettings);
         menu.Items.Add(new ToolStripSeparator());
@@ -512,6 +535,7 @@ internal static class Program
         menu.Items.Add(_miAutostart);
         menu.Items.Add(_miMinimap);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(miPull);
         menu.Items.Add(miReset);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(miExit);
@@ -530,7 +554,7 @@ internal static class Program
         _tray = new NotifyIcon
         {
             Icon = LoadAppIcon(),
-            Text = "ScrollVD — панорамный рабочий стол",
+            Text = "ScrollVD — panoramic desktop",
             Visible = true,
             ContextMenuStrip = menu,
         };
@@ -541,7 +565,7 @@ internal static class Program
     {
         if (_miMinimap is null) return;
         bool visible = _minimap?.Visible == true;
-        _miMinimap.Text = visible ? "Скрыть миникарту" : "Показать миникарту";
+        _miMinimap.Text = visible ? "Hide minimap" : "Show minimap";
         _miMinimap.Checked = visible;
     }
 

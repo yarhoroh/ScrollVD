@@ -2,7 +2,7 @@ using Microsoft.Win32;
 
 namespace ScrollVD;
 
-/// <summary>Автозапуск через ключ реестра HKCU\...\Run (не требует прав администратора).</summary>
+/// <summary>Autostart via the HKCU\...\Run registry key (does not require administrator privileges).</summary>
 internal static class Autostart
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";

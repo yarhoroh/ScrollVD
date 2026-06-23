@@ -4,13 +4,13 @@ internal sealed class SettingsForm : Form
 {
     private readonly MinimapForm? _minimap;
 
-    // --- Панорама ---
-    private readonly CheckBox _enabled = new() { Text = "Панорама включена", AutoSize = true };
-    private readonly CheckBox _edge = new() { Text = "Прокрутка у края экрана", AutoSize = true };
-    private readonly CheckBox _grab = new() { Text = "Захват по горячей клавише", AutoSize = true };
-    private readonly CheckBox _reverse = new() { Text = "Обратное направление захвата", AutoSize = true };
-    private readonly CheckBox _snap = new() { Text = "Режим сетки — прыжок целым экраном (9 областей)", AutoSize = true };
-    private readonly CheckBox _autostart = new() { Text = "Запускать вместе с Windows", AutoSize = true };
+    // --- Panning ---
+    private readonly CheckBox _enabled = new() { Text = "Panning enabled", AutoSize = true };
+    private readonly CheckBox _edge = new() { Text = "Edge scrolling", AutoSize = true };
+    private readonly CheckBox _grab = new() { Text = "Grab with hotkey", AutoSize = true };
+    private readonly CheckBox _reverse = new() { Text = "Reverse grab direction", AutoSize = true };
+    private readonly CheckBox _snap = new() { Text = "Grid mode — jump by a full screen (9 cells)", AutoSize = true };
+    private readonly CheckBox _autostart = new() { Text = "Start with Windows", AutoSize = true };
     private readonly ComboBox _hotkey = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
 
     private readonly NumericUpDown _baseSpeed = Num(1, 200);
@@ -21,8 +21,8 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _margin = Num(1, 50);
     private readonly NumericUpDown _canvas = Num(1, 10);
 
-    // --- Миникарта ---
-    private readonly CheckBox _mmVisible = new() { Text = "Показать миникарту", AutoSize = true };
+    // --- Minimap ---
+    private readonly CheckBox _mmVisible = new() { Text = "Show minimap", AutoSize = true };
     private readonly ComboBox _mmHotkey = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     private readonly NumericUpDown _mmWidth = Num(80, 800);
 
@@ -50,7 +50,7 @@ internal sealed class SettingsForm : Form
     {
         _minimap = minimap;
 
-        Text = "ScrollVD — настройки";
+        Text = "ScrollVD — Settings";
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         MinimizeBox = true;
@@ -70,45 +70,45 @@ internal sealed class SettingsForm : Form
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        // === Секция: Панорама ===
-        Header("Панорама");
+        // === Section: Panning ===
+        Header("Panning");
         Span(_enabled);
         Span(_edge);
         // GRID-MODE-ONLY (testing): hotkey grab options hidden.
         // Span(_grab);
-        // Row("Горячая клавиша захвата:", _hotkey);
+        // Row("Grab hotkey:", _hotkey);
         // Span(_reverse);
         // GRID-MODE-ONLY (testing): grid mode is the only mode now, always on.
         // Span(_snap);
 
-        Header("Прокрутка у края");
+        Header("Edge scrolling");
         // GRID-MODE-ONLY (testing): smooth scroll speed options hidden.
-        // Row("Скорость (старт), px/такт:", _baseSpeed);
-        // Row("Максимальная скорость, px/такт:", _maxSpeed);
-        // Row("Ускорение, px/такт за сек.:", _accel);
-        Row("Задержка перед стартом, мс:", _dwell);
-        Row("«Мёртвые» углы, px:", _corner);
-        Row("Зона срабатывания у края, px:", _margin);
-        Row("Размер холста (× экрана):", _canvas);
+        // Row("Speed (start), px/tick:", _baseSpeed);
+        // Row("Max speed, px/tick:", _maxSpeed);
+        // Row("Acceleration, px/tick per sec:", _accel);
+        Row("Start delay, ms:", _dwell);
+        Row("Dead corners, px:", _corner);
+        Row("Edge trigger zone, px:", _margin);
+        Row("Canvas size (× screen):", _canvas);
 
-        // === Секция: Миникарта ===
-        Header("Миникарта");
+        // === Section: Minimap ===
+        Header("Minimap");
         Span(_mmVisible);
-        Row("Горячая клавиша (двойной тап):", _mmHotkey);
-        Row("Ширина миникарты, px:", _mmWidth);
+        Row("Hotkey (double tap):", _mmHotkey);
+        Row("Minimap width, px:", _mmWidth);
 
-        // === Секция: Система ===
-        Header("Система");
+        // === Section: System ===
+        Header("System");
         Span(_autostart);
 
-        var resetBtn = new Button { Text = "Сбросить позиции окон", AutoSize = true };
+        var resetBtn = new Button { Text = "Reset window positions", AutoSize = true };
         resetBtn.Click += (_, _) => Program.ResetPositions();
         Span(resetBtn);
 
-        // === Кнопки ===
+        // === Buttons ===
         var ok = new Button { Text = "OK", AutoSize = true };
-        var cancel = new Button { Text = "Отмена", AutoSize = true };
-        var apply = new Button { Text = "Применить", AutoSize = true };
+        var cancel = new Button { Text = "Cancel", AutoSize = true };
+        var apply = new Button { Text = "Apply", AutoSize = true };
         ok.Click += (_, _) => { Apply(); Close(); };
         cancel.Click += (_, _) => Close();
         apply.Click += (_, _) => Apply();
@@ -141,7 +141,7 @@ internal sealed class SettingsForm : Form
         LoadValues();
     }
 
-    // ====== Построение сетки ======
+    // ====== Grid building ======
     private void Header(string title)
     {
         var lbl = new Label
@@ -183,7 +183,7 @@ internal sealed class SettingsForm : Form
     private static NumericUpDown Num(int min, int max) =>
         new() { Minimum = min, Maximum = max, Width = 80, TextAlign = HorizontalAlignment.Right };
 
-    // ====== Загрузка / сохранение ======
+    // ====== Load / save ======
     private void LoadValues()
     {
         var s = Config.Current;
@@ -231,14 +231,14 @@ internal sealed class SettingsForm : Form
         if (newW != s.MinimapWidth && _minimap is not null)
         {
             s.MinimapWidth = newW;
-            s.MinimapHeight = -1; // сбросить — пересчитать авто
-            _minimap.Size = new Size(newW, -1); // MinimapForm пересчитает высоту сама при следующем Show
+            s.MinimapHeight = -1; // reset — recompute automatically
+            _minimap.Size = new Size(newW, -1); // MinimapForm recomputes its own height on the next Show
         }
         s.MinimapWidth = newW;
 
         Autostart.Set(_autostart.Checked);
 
-        // Синхронизировать видимость миникарты
+        // Sync minimap visibility
         if (_minimap is not null)
         {
             bool want = _mmVisible.Checked;

@@ -10,19 +10,19 @@ internal sealed class PanEngine
 
     private readonly Native.IVirtualDesktopManager? _vdm;
 
-    // Список окон в порядке EnumWindows (TOP → BOTTOM, т.е. [0] = самое верхнее)
+    // List of windows in EnumWindows order (TOP → BOTTOM, i.e. [0] = topmost)
     private readonly List<IntPtr> _gesture = new();
 
-    // Текущие позиции — обновляются инкрементально, без GetWindowRect на каждом кадре
+    // Current positions — updated incrementally, no GetWindowRect per frame
     private readonly Dictionary<IntPtr, (int x, int y)> _gesturePos = new();
 
-    // Исходные позиции до первого сдвига — для точного Reset()
+    // Original positions before the first offset — for an accurate Reset()
     private readonly Dictionary<IntPtr, (int x, int y)> _origin = new();
 
     private long _offX, _offY;
     private int _maxX, _maxY;
 
-    // Сохранённые позиции холста для каждого виртуального рабочего стола
+    // Saved canvas positions for each virtual desktop
     private readonly Dictionary<Guid, (long offX, long offY)> _desktopOffsets = new();
 
     public (long offX, long offY, int maxX, int maxY) GetState() => (_offX, _offY, _maxX, _maxY);
@@ -38,7 +38,7 @@ internal sealed class PanEngine
     public Guid CurrentDesktopId()
     {
         if (_vdm is null) return Guid.Empty;
-        // Быстрый путь: foreground-окно
+        // Fast path: foreground window
         try
         {
             var fg = Native.GetForegroundWindow();
@@ -46,7 +46,7 @@ internal sealed class PanEngine
                 return id;
         }
         catch { }
-        // Fallback: ищем первое видимое обычное окно, у которого есть desktop ID
+        // Fallback: find the first visible normal window that has a desktop ID
         var sb = new System.Text.StringBuilder(64);
         Guid found = Guid.Empty;
         Native.EnumWindows((h, _) =>
@@ -68,8 +68,8 @@ internal sealed class PanEngine
     }
 
     /// <summary>
-    /// Начало жеста: перечисляем окна и запоминаем их текущие позиции.
-    /// GetWindowRect вызывается только здесь — один раз за жест.
+    /// Begin a gesture: enumerate windows and record their current positions.
+    /// GetWindowRect is called only here — once per gesture.
     /// </summary>
     public void BeginGesture()
     {
@@ -107,6 +107,189 @@ internal sealed class PanEngine
 
     public void JumpTo(long targetOffX, long targetOffY)
         => Shift((int)(targetOffX - _offX), (int)(targetOffY - _offY));
+
+    /// <summary>
+    /// If the window sits on another cell (doesn't intersect the visible screen),
+    /// pull it onto the current screen keeping its sub-screen position. Returns true
+    /// if it was moved. Only this one window moves; the global pan is untouched.
+    /// </summary>
+    public bool PullWindowToCurrentScreen(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        if (Native.IsIconic(hwnd)) Native.ShowWindow(hwnd, Native.SW_RESTORE); // un-minimize first
+        if (!Native.GetWindowRect(hwnd, out var r)) return false;
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        if (sw <= 0 || sh <= 0) return false;
+
+        bool intersects = r.right > vx && r.left < vx + sw && r.bottom > vy && r.top < vy + sh;
+        if (!intersects)
+        {
+            int relX = (((r.left - vx) % sw) + sw) % sw; // wrap into [0, sw)
+            int relY = (((r.top - vy) % sh) + sh) % sh;
+            Native.SetWindowPos(hwnd, IntPtr.Zero, vx + relX, vy + relY, 0, 0, MoveFlags);
+        }
+
+        // Raise it so it's clearly visible — confirms the window was pulled here
+        ForceForeground(hwnd);
+        return !intersects;
+    }
+
+    /// <summary>
+    /// Bring a window to the foreground reliably. Plain SetForegroundWindow is blocked
+    /// for background processes, so we briefly attach to the current foreground thread.
+    /// </summary>
+    private static void ForceForeground(IntPtr hwnd)
+    {
+        if (Native.IsIconic(hwnd)) Native.ShowWindow(hwnd, Native.SW_RESTORE);
+
+        var fg = Native.GetForegroundWindow();
+        uint thisThread = Native.GetCurrentThreadId();
+        uint fgThread = fg != IntPtr.Zero ? Native.GetWindowThreadProcessId(fg, out _) : 0;
+
+        if (fgThread != 0 && fgThread != thisThread) Native.AttachThreadInput(thisThread, fgThread, true);
+        Native.BringWindowToTop(hwnd);
+        Native.SetForegroundWindow(hwnd);
+        if (fgThread != 0 && fgThread != thisThread) Native.AttachThreadInput(thisThread, fgThread, false);
+    }
+
+    /// <summary>
+    /// All movable windows on the current virtual desktop (including minimized ones),
+    /// labelled "App name — window title".
+    /// </summary>
+    public List<(IntPtr hwnd, string title)> ListMovableWindows()
+    {
+        var result = new List<(IntPtr, string)>();
+        var sb = new StringBuilder(64);
+        var title = new StringBuilder(256);
+        Native.EnumWindows((h, _) =>
+        {
+            if (IsMovable(h, sb, includeMinimized: true))
+            {
+                title.Clear();
+                Native.GetWindowText(h, title, title.Capacity);
+                string t = title.ToString();
+                string app = GetAppName(h);
+                string label =
+                    !string.IsNullOrWhiteSpace(app) && !string.IsNullOrWhiteSpace(t) ? $"{app} — {t}" :
+                    !string.IsNullOrWhiteSpace(app) ? app :
+                    !string.IsNullOrWhiteSpace(t) ? t : "(untitled)";
+                result.Add((h, label));
+            }
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+
+    /// <summary>
+    /// Process name for the window (e.g. "chrome" → "Chrome"). Uses only ProcessName —
+    /// MainModule/FileVersionInfo is far too slow (and throws across bitness/elevation).
+    /// </summary>
+    private static string GetAppName(IntPtr h)
+    {
+        try
+        {
+            Native.GetWindowThreadProcessId(h, out uint pid);
+            using var p = System.Diagnostics.Process.GetProcessById((int)pid);
+            var name = p.ProcessName;
+            return name.Length > 0 ? char.ToUpper(name[0]) + name[1..] : name;
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// Move a window to grid cell (col,row), preserving its position WITHIN a cell
+    /// (works no matter which cell it currently sits on). If the target cell is the
+    /// one currently in view, the window is also raised to the front.
+    /// </summary>
+    public void MoveWindowToCellWrapped(IntPtr hwnd, int col, int row)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        if (Native.IsIconic(hwnd)) Native.ShowWindow(hwnd, Native.SW_RESTORE); // un-minimize first
+        if (!Native.GetWindowRect(hwnd, out var r)) return;
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        if (sw <= 0 || sh <= 0) return;
+
+        int relX = (((r.left - vx) % sw) + sw) % sw; // sub-cell position
+        int relY = (((r.top - vy) % sh) + sh) % sh;
+        long offViewX = _maxX - (long)col * sw;
+        long offViewY = _maxY - (long)row * sh;
+        int newLeft = (int)(vx + relX + (_offX - offViewX));
+        int newTop = (int)(vy + relY + (_offY - offViewY));
+        Native.SetWindowPos(hwnd, IntPtr.Zero, newLeft, newTop, 0, 0, MoveFlags);
+
+        // If it landed on the cell we're currently looking at, bring it to front.
+        int viewCol = (int)Math.Round((_maxX - (double)_offX) / sw);
+        int viewRow = (int)Math.Round((_maxY - (double)_offY) / sh);
+        if (col == viewCol && row == viewRow) ForceForeground(hwnd);
+    }
+
+    /// <summary>
+    /// Build a small thumbnail of what cell (col,row) contains, by rendering each
+    /// window on it with PrintWindow and compositing at its cell-relative position.
+    /// Works for off-screen cells too. Returns null if nothing renders.
+    /// </summary>
+    public Bitmap? CaptureCellPreview(int col, int row, int maxW, int maxH)
+    {
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        if (sw <= 0 || sh <= 0) return null;
+
+        // How much windows would shift on screen if we panned to view this cell.
+        long shiftX = (_maxX - (long)col * sw) - _offX;
+        long shiftY = (_maxY - (long)row * sh) - _offY;
+
+        float scale = Math.Min(maxW / (float)sw, maxH / (float)sh);
+        int tw = Math.Max(1, (int)(sw * scale));
+        int th = Math.Max(1, (int)(sh * scale));
+
+        var thumb = new Bitmap(tw, th);
+        bool any = false;
+        using (var g = Graphics.FromImage(thumb))
+        {
+            g.Clear(Color.FromArgb(18, 22, 44));
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+
+            // EnumWindows is top→bottom; reverse so the topmost window is painted last.
+            var sb = new StringBuilder(64);
+            var list = new List<IntPtr>();
+            Native.EnumWindows((h, _) => { if (IsMovable(h, sb)) list.Add(h); return true; }, IntPtr.Zero);
+            list.Reverse();
+
+            foreach (var h in list)
+            {
+                if (!Native.GetWindowRect(h, out var r)) continue;
+                int ww = r.right - r.left, wh = r.bottom - r.top;
+                if (ww <= 0 || wh <= 0) continue;
+
+                float lx = r.left + shiftX - vx;   // window pos within the cell screen
+                float ly = r.top + shiftY - vy;
+                if (lx + ww <= 0 || ly + wh <= 0 || lx >= sw || ly >= sh) continue; // outside cell
+
+                using var temp = new Bitmap(ww, wh);
+                bool ok;
+                using (var tg = Graphics.FromImage(temp))
+                {
+                    var hdc = tg.GetHdc();
+                    ok = Native.PrintWindow(h, hdc, Native.PW_RENDERFULLCONTENT);
+                    tg.ReleaseHdc(hdc);
+                }
+                if (!ok) continue;
+                g.DrawImage(temp, lx * scale, ly * scale, ww * scale, wh * scale);
+                any = true;
+            }
+        }
+
+        if (!any) { thumb.Dispose(); return null; }
+        return thumb;
+    }
 
     /// <summary>
     /// Place a single window onto grid cell (col,row), keeping the screen-relative
@@ -183,22 +366,22 @@ internal sealed class PanEngine
     }
 
     /// <summary>
-    /// Вызывается при переключении виртуального рабочего стола Windows.
-    /// Сохраняет позицию холста для старого стола, восстанавливает для нового.
+    /// Called when the Windows virtual desktop is switched.
+    /// Saves the canvas position for the old desktop and restores it for the new one.
     /// </summary>
     public void OnDesktopSwitch(Guid oldId, Guid newId)
     {
-        // Завершаем любой активный жест
+        // End any active gesture
         if (_gesture.Count > 0) EndGesture();
 
-        // Сохраняем текущее смещение для старого стола
+        // Save the current offset for the old desktop
         if (oldId != Guid.Empty)
             _desktopOffsets[oldId] = (_offX, _offY);
 
-        // Сбрасываем origin — на новом столе HWND другие
+        // Reset origin — the new desktop has different HWNDs
         _origin.Clear();
 
-        // Восстанавливаем смещение для нового стола (или 0,0 если первый раз)
+        // Restore the offset for the new desktop (or 0,0 if it's the first time)
         if (_desktopOffsets.TryGetValue(newId, out var saved))
             (_offX, _offY) = saved;
         else
@@ -235,9 +418,9 @@ internal sealed class PanEngine
     {
         if (_gesture.Count == 0) return;
 
-        // Двигаем сверху вниз (порядок EnumWindows: [0] = topmost).
-        // Верхнее окно перемещается первым — под ним ещё нет «дыры», DWM
-        // не успевает показать промежуточный кадр с неправильным перекрытием.
+        // Move top to bottom (EnumWindows order: [0] = topmost).
+        // The topmost window moves first — there is no "hole" beneath it yet, so DWM
+        // doesn't get a chance to show an intermediate frame with wrong overlap.
         foreach (var h in _gesture)
         {
             if (!_gesturePos.TryGetValue(h, out var pos)) continue;
@@ -248,9 +431,10 @@ internal sealed class PanEngine
         }
     }
 
-    private bool IsMovable(IntPtr h, StringBuilder sb, bool anyDesktop = false)
+    private bool IsMovable(IntPtr h, StringBuilder sb, bool anyDesktop = false, bool includeMinimized = false)
     {
-        if (!Native.IsWindowVisible(h) || Native.IsIconic(h)) return false;
+        if (!Native.IsWindowVisible(h)) return false;
+        if (!includeMinimized && Native.IsIconic(h)) return false;
         if (Native.GetWindowTextLength(h) == 0) return false;
 
         sb.Clear();

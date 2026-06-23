@@ -2,10 +2,10 @@ using System.Runtime.InteropServices;
 
 namespace ScrollVD;
 
-/// <summary>Тонкая обёртка над Win32 API — всё «низкоуровневое» живёт здесь.</summary>
+/// <summary>Thin wrapper over the Win32 API — all the low-level stuff lives here.</summary>
 internal static class Native
 {
-    // ---- Низкоуровневый хук мыши ----
+    // ---- Low-level mouse hook ----
     public const int WH_MOUSE_LL = 14;
     public const int WM_MOUSEMOVE = 0x0200;
 
@@ -37,7 +37,7 @@ internal static class Native
         public UIntPtr dwExtraInfo;
     }
 
-    // ---- Состояние клавиш ----
+    // ---- Key state ----
     public const int VK_SHIFT = 0x10;
     public const int VK_CONTROL = 0x11;
     public const int VK_MENU = 0x12;   // Alt
@@ -47,7 +47,7 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
 
-    // ---- Курсор ----
+    // ---- Cursor ----
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetCursorPos(out POINT lpPoint);
@@ -56,7 +56,7 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetCursorPos(int X, int Y);
 
-    // ---- Перечисление и перемещение окон ----
+    // ---- Window enumeration and movement ----
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -84,6 +84,9 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern int GetWindowTextLength(IntPtr hWnd);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
@@ -99,10 +102,13 @@ internal static class Native
     public static extern bool EndDeferWindowPos(IntPtr hWinPosInfo);
 
     public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_NOOWNERZORDER = 0x0200;
     public const uint SWP_NOSENDCHANGING = 0x0400;
+
+    public static readonly IntPtr HWND_TOPMOST = new(-1);
 
     [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);
@@ -116,14 +122,44 @@ internal static class Native
     public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    public const int SW_RESTORE = 9;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
     public static extern IntPtr WindowFromPoint(POINT Point);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+
+    public const uint PW_RENDERFULLCONTENT = 0x00000002;
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
     public const uint GA_ROOT = 2;
 
-    // ---- Виртуальные рабочие столы Windows (публичный COM-интерфейс) ----
+    // ---- Windows virtual desktops (public COM interface) ----
     [ComImport]
     [Guid("a5cd92ff-29be-454c-8d04-d82879fb3f1b")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
