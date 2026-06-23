@@ -332,6 +332,13 @@ internal static class Program
             return;
         }
 
+        // Optional: only allow edge jumps while Shift is held
+        if (S.EdgeRequireShift && !Down(Native.VK_SHIFT))
+        {
+            EndEdge();
+            return;
+        }
+
         // While the scroll animation is running, wait for it to finish and reset dwell
         if (_mode == Mode.Scroll)
         {

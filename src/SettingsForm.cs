@@ -10,6 +10,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _grab = new() { Text = "Grab with hotkey", AutoSize = true };
     private readonly CheckBox _reverse = new() { Text = "Reverse grab direction", AutoSize = true };
     private readonly CheckBox _snap = new() { Text = "Grid mode — jump by a full screen (9 cells)", AutoSize = true };
+    private readonly CheckBox _edgeShift = new() { Text = "Edge jump only while Shift is held", AutoSize = true };
     private readonly CheckBox _autostart = new() { Text = "Start with Windows", AutoSize = true };
     private readonly ComboBox _hotkey = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
 
@@ -82,6 +83,7 @@ internal sealed class SettingsForm : Form
         // Span(_snap);
 
         Header("Edge scrolling");
+        Span(_edgeShift);
         // GRID-MODE-ONLY (testing): smooth scroll speed options hidden.
         // Row("Speed (start), px/tick:", _baseSpeed);
         // Row("Max speed, px/tick:", _maxSpeed);
@@ -192,6 +194,7 @@ internal sealed class SettingsForm : Form
         _grab.Checked = s.GrabEnabled;
         _reverse.Checked = s.ReverseGrab;
         _snap.Checked = s.SnapMode;
+        _edgeShift.Checked = s.EdgeRequireShift;
         _autostart.Checked = Autostart.IsEnabled();
         _hotkey.SelectedIndex = HotkeyIndex(s.GrabHotkey);
 
@@ -216,6 +219,7 @@ internal sealed class SettingsForm : Form
         s.GrabEnabled = _grab.Checked;
         s.ReverseGrab = _reverse.Checked;
         s.SnapMode = _snap.Checked;
+        s.EdgeRequireShift = _edgeShift.Checked;
         s.GrabHotkey = HotkeyAt(_hotkey.SelectedIndex);
 
         s.EdgeBaseSpeed = (int)_baseSpeed.Value;

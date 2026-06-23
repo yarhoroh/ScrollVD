@@ -23,6 +23,7 @@ internal sealed class Settings
     public int CanvasFactor { get; set; } = 1;       // how many "screens" you can move in each direction
     public bool ReverseGrab { get; set; }            // reverse grab direction for keys
     public bool SnapMode { get; set; } = false;      // grid jump (full screen) instead of smooth scroll
+    public bool EdgeRequireShift { get; set; } = false; // edge jump fires only while Shift is held
 
     public HotkeyCombo GrabHotkey { get; set; } = HotkeyCombo.CtrlShift;
 

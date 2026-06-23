@@ -68,6 +68,7 @@ offset per desktop and avoid moving windows that belong to a different one.
 | Action | How |
 |---|---|
 | Jump one screen | Move the cursor to a screen edge (grid mode) |
+| Require Shift for edge jumps | Enable **Settings → Edge jump only while Shift is held** — then the edge only fires while `Shift` is down |
 | Toggle the minimap | Double-tap the minimap hotkey, or use the tray menu |
 | Move the minimap | `Ctrl` + drag |
 | Resize the minimap | Drag its bottom-right corner |
