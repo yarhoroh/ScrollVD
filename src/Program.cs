@@ -244,6 +244,14 @@ internal static class Program
     {
         if (!S.Enabled) return;
 
+        // Only carry on a MOVE, not a RESIZE: if the window's size changed since the
+        // drag began, the user is resizing it — don't pan.
+        if (Native.GetWindowRect(_dragHwnd, out var cur))
+        {
+            int ow = _dragOrigRect.right - _dragOrigRect.left, oh = _dragOrigRect.bottom - _dragOrigRect.top;
+            if (cur.right - cur.left != ow || cur.bottom - cur.top != oh) { _dragEdgeEnterTick = 0; return; }
+        }
+
         // Trigger at the work-area edge (just inside the taskbar), so dragging a window
         // down to the taskbar still pans — you can't push the cursor past it.
         var wa = Screen.GetWorkingArea(new System.Drawing.Point(p.x, p.y));
