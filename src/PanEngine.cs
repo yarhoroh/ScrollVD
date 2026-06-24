@@ -93,6 +93,20 @@ internal sealed class PanEngine
         return 0;
     }
 
+    /// <summary>Number of Windows virtual desktops (from the registry), or 0 if unknown.</summary>
+    public int VirtualDesktopCount()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops");
+            if (key?.GetValue("VirtualDesktopIDs") is byte[] blob && blob.Length % 16 == 0)
+                return blob.Length / 16;
+        }
+        catch { }
+        return 0;
+    }
+
     /// <summary>
     /// Begin a gesture: enumerate windows and record their current positions.
     /// GetWindowRect is called only here — once per gesture.
@@ -182,17 +196,18 @@ internal sealed class PanEngine
     }
 
     /// <summary>
-    /// Set of grid cells (col,row) that contain at least one window (by window centre).
-    /// Lets the minimap hint which cells are occupied without previewing each one.
+    /// For each grid cell, the distinct app icon handles (HICON) of the windows in it
+    /// (by window centre). Lets the minimap show what's where without previewing.
+    /// HICONs are owned by the windows — do not destroy them.
     /// </summary>
-    public HashSet<(int col, int row)> OccupiedCells()
+    public Dictionary<(int col, int row), List<IntPtr>> CellIcons()
     {
-        var set = new HashSet<(int, int)>();
+        var map = new Dictionary<(int, int), List<IntPtr>>();
         int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
         int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
         int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
         int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-        if (sw <= 0 || sh <= 0) return set;
+        if (sw <= 0 || sh <= 0) return map;
 
         int cols = (int)Math.Round(2.0 * _maxX / sw) + 1;
         int rows = (int)Math.Round(2.0 * _maxY / sh) + 1;
@@ -205,10 +220,17 @@ internal sealed class PanEngine
             int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
             int col = (int)Math.Floor((cx - vx - (double)_offX + _maxX) / sw);
             int row = (int)Math.Floor((cy - vy - (double)_offY + _maxY) / sh);
-            if (col >= 0 && col < cols && row >= 0 && row < rows) set.Add((col, row));
+            if (col < 0 || col >= cols || row < 0 || row >= rows) return true;
+
+            IntPtr icon = Native.GetClassLongPtr(h, Native.GCLP_HICONSM);
+            if (icon == IntPtr.Zero) icon = Native.GetClassLongPtr(h, Native.GCLP_HICON);
+            if (icon == IntPtr.Zero) return true;
+
+            if (!map.TryGetValue((col, row), out var list)) { list = new List<IntPtr>(); map[(col, row)] = list; }
+            if (!list.Contains(icon)) list.Add(icon); // distinct apps only
             return true;
         }, IntPtr.Zero);
-        return set;
+        return map;
     }
 
     /// <summary>

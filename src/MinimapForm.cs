@@ -49,9 +49,14 @@ internal sealed class MinimapForm : Form
     // --- right-click cell popup: list of windows to drop into a cell ---
     private CellListPopup? _cellPopup;
 
-    // --- occupied-cell hint (throttled recompute) ---
-    private HashSet<(int col, int row)> _occupied = new();
+    // --- occupied-cell hint: app icons per cell (throttled recompute, icons cached) ---
+    private Dictionary<(int col, int row), List<IntPtr>> _cellIcons = new();
+    private readonly Dictionary<IntPtr, Bitmap> _iconCache = new();
     private long _occupiedAt;
+
+    // --- current Windows virtual desktop number, shown in the centre (throttled) ---
+    private int _deskNum;
+    private long _deskNumAt;
 
     // WS_EX_NOACTIVATE — clicks don't switch focus
     private const int WsExNoActivate = 0x08000000;
@@ -93,7 +98,13 @@ internal sealed class MinimapForm : Form
         var timer = new System.Windows.Forms.Timer { Interval = 33 };
         timer.Tick += (_, _) => Invalidate();
         timer.Start();
-        FormClosed += (_, _) => { timer.Stop(); _preview.Dispose(); _cellPopup?.Dispose(); };
+        FormClosed += (_, _) =>
+        {
+            timer.Stop();
+            _preview.Dispose();
+            _cellPopup?.Dispose();
+            foreach (var b in _iconCache.Values) b.Dispose();
+        };
 
         // On the close button / Alt+F4 we hide rather than close. But on application exit
         // (Application.Exit) we skip the cancel, otherwise the process hangs in the tray.
@@ -180,19 +191,23 @@ internal sealed class MinimapForm : Form
         g.DrawLine(axisPen, ox, pad, ox, pad + mh);
         g.DrawLine(axisPen, pad, oy, pad + mw, oy);
 
-        // Faint hint on cells that contain at least one window (recomputed ~every 300 ms)
+        // Cells that contain windows: faint tint + the app icons in them
+        // (recomputed ~every 300 ms; the icons themselves are cached).
         if (Environment.TickCount64 - _occupiedAt > 300)
         {
-            _occupied = _engine.OccupiedCells();
+            _cellIcons = _engine.CellIcons();
             _occupiedAt = Environment.TickCount64;
         }
-        if (_occupied.Count > 0)
+        if (_cellIcons.Count > 0)
         {
             var (ocols, orows, ocw, och, opad) = CellLayout();
             using var occFill = new SolidBrush(Color.FromArgb(38, 120, 180, 255));
-            foreach (var (c, r) in _occupied)
+            foreach (var kv in _cellIcons)
+            {
+                var (c, r) = kv.Key;
                 if (c < ocols && r < orows)
                     g.FillRectangle(occFill, opad + c * ocw, opad + r * och, ocw, och);
+            }
         }
 
         // Highlighted target cell while a window is dragged onto the minimap
@@ -224,6 +239,37 @@ internal sealed class MinimapForm : Form
         using var vpPen = new Pen(Color.FromArgb(220, 140, 190, 255), 1.5f);
         g.DrawRectangle(vpPen, vpRect.X, vpRect.Y, vpRect.Width, vpRect.Height);
 
+        // Current Windows virtual desktop number — shown only when there's more than one
+        if (Environment.TickCount64 - _deskNumAt > 700)
+        {
+            _deskNum = _engine.VirtualDesktopCount() > 1 ? _engine.CurrentDesktopNumber() : 0;
+            _deskNumAt = Environment.TickCount64;
+        }
+        if (_deskNum > 0)
+        {
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+            float fs = mh * 0.55f / 1.7f;
+            using var f = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            var rect = new RectangleF(pad, pad, mw, mh);
+            using var shadow = new SolidBrush(Color.FromArgb(70, 0, 0, 0));
+            using var fore = new SolidBrush(Color.FromArgb(70, 200, 220, 255));
+            g.DrawString(_deskNum.ToString(), f, shadow, new RectangleF(rect.X + 2, rect.Y + 2, rect.Width, rect.Height), sf);
+            g.DrawString(_deskNum.ToString(), f, fore, rect, sf);
+        }
+
+        // App icons per cell — drawn on top of the viewport & number so they stay visible
+        if (_cellIcons.Count > 0)
+        {
+            var (icols, irows, icw, ich, ipad) = CellLayout();
+            foreach (var kv in _cellIcons)
+            {
+                var (c, r) = kv.Key;
+                if (c < icols && r < irows)
+                    DrawCellIcons(g, new RectangleF(ipad + c * icw, ipad + r * ich, icw, ich), kv.Value);
+            }
+        }
+
         // Active window marker — a translucent red dot for a couple of seconds
         if (Environment.TickCount64 < _markerUntil)
         {
@@ -245,6 +291,62 @@ internal sealed class MinimapForm : Form
             int d = i * 3;
             g.DrawLine(gripPen, w - 2, h - 2 - d, w - 2 - d, h - 2);
         }
+    }
+
+    // Draw up to 6 distinct app icons in a grid that fills the cell; icons grow when
+    // there are few and shrink when there are many. "+N" takes a slot if there are more.
+    private void DrawCellIcons(Graphics g, RectangleF cell, List<IntPtr> icons)
+    {
+        if (icons.Count == 0) return;
+        const int cap = 6;
+        bool more = icons.Count > cap;
+        int realIcons = more ? cap - 1 : Math.Min(icons.Count, cap); // keep a slot for "+N"
+        int slots = realIcons + (more ? 1 : 0);
+
+        int cols = (int)Math.Ceiling(Math.Sqrt(slots));
+        int rows = (int)Math.Ceiling(slots / (double)cols);
+
+        const float gap = 4f, inset = 3f;
+        float availW = cell.Width - inset * 2, availH = cell.Height - inset * 2;
+        float size = Math.Min((availW - (cols - 1) * gap) / cols, (availH - (rows - 1) * gap) / rows);
+        size = Math.Clamp(size, 7f, 28f);
+
+        float gridW = cols * size + (cols - 1) * gap;
+        float gridH = rows * size + (rows - 1) * gap;
+        float startX = cell.X + (cell.Width - gridW) / 2f;
+        float startY = cell.Y + (cell.Height - gridH) / 2f;
+
+        var im = g.InterpolationMode;
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        for (int i = 0; i < slots; i++)
+        {
+            float x = startX + (i % cols) * (size + gap);
+            float y = startY + (i / cols) * (size + gap);
+            if (i < realIcons)
+            {
+                var bmp = GetIconBitmap(icons[i]);
+                if (bmp is not null) g.DrawImage(bmp, x, y, size, size);
+            }
+            else
+            {
+                using var f = new Font("Segoe UI", size * 0.55f, FontStyle.Bold, GraphicsUnit.Pixel);
+                using var br = new SolidBrush(Color.FromArgb(235, 220, 230, 255));
+                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString("+" + (icons.Count - realIcons), f, br, new RectangleF(x, y, size, size), sf);
+            }
+        }
+        g.InterpolationMode = im;
+    }
+
+    // HICON → Bitmap, cached (the HICON belongs to the window; we never destroy it).
+    private Bitmap? GetIconBitmap(IntPtr hIcon)
+    {
+        if (_iconCache.TryGetValue(hIcon, out var cached)) return cached;
+        Bitmap? bmp = null;
+        try { using var ic = Icon.FromHandle(hIcon); bmp = ic.ToBitmap(); }
+        catch { bmp = null; }
+        if (bmp is not null) _iconCache[hIcon] = bmp;
+        return bmp;
     }
 
     /// <summary>Re-assert the always-on-top status (other windows can steal it).</summary>
@@ -437,17 +539,13 @@ internal sealed class MinimapForm : Form
         _prevCol = col;
         _prevRow = row;
 
-        var bmp = _engine.CaptureCellPreview(col, row, 280, 180);
+        var bmp = _engine.CaptureCellPreview(col, row, 187, 120);
         if (bmp is null) { _preview.HidePreview(); return; }
-
-        // Current Windows virtual desktop number (same for every cell)
-        int dn = _engine.CurrentDesktopNumber();
-        string label = dn > 0 ? dn.ToString() : "";
 
         // Place to the left of the minimap; fall back to the right if no room.
         int px = Bounds.Left - bmp.Width - 14;
         if (px < 0) px = Bounds.Right + 8;
-        _preview.ShowAt(bmp, new Point(px, Bounds.Top), label);
+        _preview.ShowAt(bmp, new Point(px, Bounds.Top));
     }
 
     // Popup list of windows to drop into cell (col,row) — a lightweight no-activate
@@ -469,7 +567,8 @@ internal sealed class MinimapForm : Form
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
-        if (!Visible) { _prevCol = _prevRow = -1; _preview.HidePreview(); }
+        if (Visible) ReassertTopMost();
+        else { _prevCol = _prevRow = -1; _preview.HidePreview(); }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)

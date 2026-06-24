@@ -121,6 +121,12 @@ internal static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")]
+    public static extern IntPtr GetClassLongPtr(IntPtr hWnd, int nIndex);
+
+    public const int GCLP_HICON = -14;
+    public const int GCLP_HICONSM = -34;
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(IntPtr hWnd);

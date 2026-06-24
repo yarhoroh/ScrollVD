@@ -36,8 +36,8 @@ No real Windows virtual desktops are created, so nothing is left behind when you
 | 🖱️ **Right-click to place** | Right-click a cell to pick any window (including minimized) and send it there. |
 | ✋ **Drag to throw** | Drag a window straight onto a minimap cell to move it into that region. |
 | 🧲 **Bring it to you** | Activating a window that lives on another cell pulls it onto the current screen. |
-| 🟦 **Occupied-cell hint** | Cells that contain at least one window are subtly highlighted on the minimap, so you can see what's where at a glance. |
-| 🔢 **Desktop number** | The hover preview shows your current Windows virtual-desktop number in the centre. |
+| 🟦 **App icons in cells** | Each minimap cell shows the icons of the apps it contains (up to 6, then “+N”), so you can see what's where at a glance — no need to preview every cell. |
+| 🔢 **Desktop number** | When you have more than one Windows virtual desktop, the current desktop number is shown faintly in the centre of the minimap. |
 
 <div align="center">
 <img src="docs/minimap.png" alt="ScrollVD minimap" width="360"><br>
