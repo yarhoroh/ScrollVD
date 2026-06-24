@@ -24,6 +24,7 @@ internal static class Program
     private static Native.RECT _dragOrigRect;
     private static bool _dragActive;
     private static bool _lmbWasDown;
+    private static long _dragEdgeEnterTick; // dwell timer for drag-to-edge panning
     // private static long _edgeStartTick; // GRID-MODE-ONLY (testing): used only by smooth edge scroll
 
     // Scroll-to-window: ease-out animation
@@ -210,11 +211,18 @@ internal static class Program
         }
         else if (lmb && _dragActive)
         {
-            // Dragging: highlight the cell under the cursor while over the minimap
+            // Over the minimap → highlight the target cell; otherwise, if at a screen
+            // edge, pan one cell (carrying the dragged window with you).
             if (_minimap is { Visible: true } && _minimap.TryGetCellAtScreen(pt, out int col, out int row))
+            {
                 _minimap.SetHighlight(col, row);
+                _dragEdgeEnterTick = 0;
+            }
             else
+            {
                 _minimap?.SetHighlight(-1, -1);
+                HandleDragEdgePan(p);
+            }
         }
         else if (!lmb && _lmbWasDown && _dragActive)
         {
@@ -224,9 +232,42 @@ internal static class Program
             _minimap?.SetHighlight(-1, -1);
             _dragActive = false;
             _dragHwnd = IntPtr.Zero;
+            _dragEdgeEnterTick = 0;
         }
 
         _lmbWasDown = lmb;
+    }
+
+    // While dragging a window to a screen edge, pan one cell in that direction every
+    // EdgeDwellMs, excluding the dragged window so it rides along under the cursor.
+    private static void HandleDragEdgePan(Native.POINT p)
+    {
+        if (!S.Enabled) return;
+
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        int right = vx + Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN) - 1;
+        int bottom = vy + Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN) - 1;
+
+        int m = S.EdgeMargin;
+        bool atLeft = p.x <= vx + m, atRight = p.x >= right - m;
+        bool atTop = p.y <= vy + m, atBottom = p.y >= bottom - m;
+
+        // Don't treat the taskbar over left/right/top as an edge (same as EdgeTick).
+        var wa = Screen.GetWorkingArea(new System.Drawing.Point(p.x, p.y));
+        if (p.y < wa.Top) atTop = false;
+        if (p.x < wa.Left) atLeft = false;
+        if (p.x >= wa.Right) atRight = false;
+
+        int ux = atLeft ? 1 : atRight ? -1 : 0;
+        int uy = atTop ? 1 : atBottom ? -1 : 0;
+        if ((ux == 0 && uy == 0) || !DesktopEnabled()) { _dragEdgeEnterTick = 0; return; }
+
+        if (_dragEdgeEnterTick == 0) { _dragEdgeEnterTick = Environment.TickCount64; return; }
+        if (Environment.TickCount64 - _dragEdgeEnterTick < S.EdgeDwellMs) return;
+
+        _engine.JumpOneCellExcluding(ux, uy, _dragHwnd);
+        _dragEdgeEnterTick = Environment.TickCount64; // re-arm for the next cell
     }
 
     private static bool IsThrowable(IntPtr h)

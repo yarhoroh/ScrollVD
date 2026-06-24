@@ -76,6 +76,7 @@ offset per desktop and avoid moving windows that belong to a different one.
 | Resize the minimap | Drag its bottom-right corner |
 | Pan via minimap | Click / drag inside the minimap |
 | Send a window to a cell | Right-click a cell → pick a window, **or** drag a window onto the cell |
+| Carry a window to the next cell | Drag a window to a screen edge — the view pans one cell while the window rides along under the cursor |
 | Bring active window here | Tray menu → *Bring active window here* |
 | Reset all windows | Tray menu / Settings → *Reset window positions* |
 
