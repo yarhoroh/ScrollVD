@@ -244,29 +244,22 @@ internal static class Program
     {
         if (!S.Enabled) return;
 
-        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
-        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        int right = vx + Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN) - 1;
-        int bottom = vy + Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN) - 1;
-
-        int m = S.EdgeMargin;
-        bool atLeft = p.x <= vx + m, atRight = p.x >= right - m;
-        bool atTop = p.y <= vy + m, atBottom = p.y >= bottom - m;
-
-        // Don't treat the taskbar over left/right/top as an edge (same as EdgeTick).
+        // Trigger at the work-area edge (just inside the taskbar), so dragging a window
+        // down to the taskbar still pans — you can't push the cursor past it.
         var wa = Screen.GetWorkingArea(new System.Drawing.Point(p.x, p.y));
-        if (p.y < wa.Top) atTop = false;
-        if (p.x < wa.Left) atLeft = false;
-        if (p.x >= wa.Right) atRight = false;
+        int m = S.EdgeMargin;
+        bool atLeft = p.x <= wa.Left + m, atRight = p.x >= wa.Right - 1 - m;
+        bool atTop = p.y <= wa.Top + m, atBottom = p.y >= wa.Bottom - 1 - m;
 
         int ux = atLeft ? 1 : atRight ? -1 : 0;
         int uy = atTop ? 1 : atBottom ? -1 : 0;
         if ((ux == 0 && uy == 0) || !DesktopEnabled()) { _dragEdgeEnterTick = 0; return; }
 
+        if (_mode == Mode.Scroll) return; // a pan is still animating — wait for it
         if (_dragEdgeEnterTick == 0) { _dragEdgeEnterTick = Environment.TickCount64; return; }
         if (Environment.TickCount64 - _dragEdgeEnterTick < S.EdgeDwellMs) return;
 
-        _engine.JumpOneCellExcluding(ux, uy, _dragHwnd);
+        TriggerSnapJump(ux, uy, _dragHwnd); // animated pan, dragged window stays put
         _dragEdgeEnterTick = Environment.TickCount64; // re-arm for the next cell
     }
 
@@ -446,8 +439,9 @@ internal static class Program
         // _engine.Shift(ux * (int)Math.Max(1, Math.Round(speed)), uy * (int)Math.Max(1, Math.Round(speed)));
     }
 
-    /// <summary>Jump exactly one screen in the (ux, uy) direction.</summary>
-    private static void TriggerSnapJump(int ux, int uy)
+    /// <summary>Jump exactly one screen in the (ux, uy) direction (animated). If
+    /// <paramref name="exclude"/> is set, that window stays put while the rest pan.</summary>
+    private static void TriggerSnapJump(int ux, int uy, IntPtr exclude = default)
     {
         var (offX, offY, maxX, maxY) = _engine.GetState();
         int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
@@ -469,6 +463,7 @@ internal static class Program
         _scrollTargetY = tY;
         _mode = Mode.Scroll;
         _engine.BeginGesture();
+        if (exclude != IntPtr.Zero) _engine.ExcludeFromGesture(exclude);
     }
 
     private static void EndEdge()

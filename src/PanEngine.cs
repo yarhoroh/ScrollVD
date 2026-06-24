@@ -149,26 +149,14 @@ internal sealed class PanEngine
         => Shift((int)(targetOffX - _offX), (int)(targetOffY - _offY));
 
     /// <summary>
-    /// Pan one grid cell in (ux,uy), but DON'T move <paramref name="exclude"/> — used
-    /// while dragging a window to a screen edge so it stays under the cursor (you carry
-    /// it into the revealed cell while everything else pans away). Instant, clamped.
+    /// Remove a window from the active gesture so the next pan/animation won't move it
+    /// (used while dragging a window to a screen edge — it stays under the cursor while
+    /// everything else pans away). Call right after BeginGesture().
     /// </summary>
-    public void JumpOneCellExcluding(int ux, int uy, IntPtr exclude)
+    public void ExcludeFromGesture(IntPtr h)
     {
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-        if (sw <= 0 || sh <= 0) return;
-
-        BeginGesture();                       // populates _gesture and refreshes _maxX
-        _gesture.Remove(exclude);
-        _gesturePos.Remove(exclude);
-
-        int cellX = (int)Math.Round((double)_offX / sw);
-        int cellY = (int)Math.Round((double)_offY / sh);
-        long tX = Math.Clamp((long)(cellX + ux) * sw, -_maxX, _maxX);
-        long tY = Math.Clamp((long)(cellY + uy) * sh, -_maxY, _maxY);
-        JumpTo(tX, tY);
-        EndGesture();
+        _gesture.Remove(h);
+        _gesturePos.Remove(h);
     }
 
     /// <summary>
