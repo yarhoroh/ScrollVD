@@ -16,6 +16,11 @@
 
 ---
 
+> 🎤 **Tired of typing prompts manually?** Try **[Murmur](https://murmurvt.com/)** — offline
+> voice-to-text for Windows. Fast, private, no cloud. 👉 **https://murmurvt.com/**
+
+---
+
 ## What it is
 
 ScrollVD is a tiny **system-tray** app that gives you a desktop bigger than your screen.
