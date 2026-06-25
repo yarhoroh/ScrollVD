@@ -20,7 +20,15 @@ internal sealed class Settings
     public int CornerDead { get; set; } = 48;        // "dead" corners, px
     public int EdgeMargin { get; set; } = 2;         // edge trigger zone, px
 
-    public int CanvasFactor { get; set; } = 1;       // how many "screens" you can move in each direction
+    public int CanvasFactor { get; set; } = 1;       // legacy, unused (kept for settings compatibility)
+
+    // Grid layout: cols x rows of cells, with the "home" cell (offset 0,0) at (HomeCol,HomeRow).
+    // Default 3x3 with home in the centre = the classic 9-cell layout.
+    public int GridCols { get; set; } = 3;
+    public int GridRows { get; set; } = 3;
+    public int HomeCol { get; set; } = 1;
+    public int HomeRow { get; set; } = 1;
+
     public bool ReverseGrab { get; set; }            // reverse grab direction for keys
     public bool SnapMode { get; set; } = false;      // grid jump (full screen) instead of smooth scroll
     public bool EdgeRequireShift { get; set; } = false; // edge jump fires only while Shift is held

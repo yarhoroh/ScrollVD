@@ -451,19 +451,20 @@ internal static class Program
     /// <paramref name="exclude"/> is set, that window stays put while the rest pan.</summary>
     private static void TriggerSnapJump(int ux, int uy, IntPtr exclude = default)
     {
-        var (offX, offY, maxX, maxY) = _engine.GetState();
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        var (offX, offY, maxOffX, maxOffY) = _engine.GetState();
+        var (cols, rows, sw, sh) = _engine.GridInfo();
         if (sw <= 0 || sh <= 0) return;
 
-        // Current grid cell (nearest multiple of sw/sh)
+        long minOffX = maxOffX - (long)(cols - 1) * sw; // rightmost cell
+        long minOffY = maxOffY - (long)(rows - 1) * sh; // bottom cell
+
+        // Current grid cell (offsets are multiples of the screen size)
         int cellX = (int)Math.Round((double)offX / sw);
         int cellY = (int)Math.Round((double)offY / sh);
 
-        // Target cell, clamped to the canvas bounds so it's always reachable
-        // (otherwise the scroll animation would chase an offset Shift() can never reach).
-        long tX = Math.Clamp((long)(cellX + ux) * sw, -maxX, maxX);
-        long tY = Math.Clamp((long)(cellY + uy) * sh, -maxY, maxY);
+        // Target cell, clamped to the canvas bounds so it's always reachable.
+        long tX = Math.Clamp((long)(cellX + ux) * sw, minOffX, maxOffX);
+        long tY = Math.Clamp((long)(cellY + uy) * sh, minOffY, maxOffY);
 
         if (tX == offX && tY == offY) return; // already at the canvas edge
 

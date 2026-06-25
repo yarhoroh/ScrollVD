@@ -20,7 +20,7 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _dwell = Num(0, 2000);
     private readonly NumericUpDown _corner = Num(0, 400);
     private readonly NumericUpDown _margin = Num(1, 50);
-    private readonly NumericUpDown _canvas = Num(1, 10);
+    private readonly ComboBox _layout = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240 };
 
     // --- Minimap ---
     private readonly CheckBox _mmVisible = new() { Text = "Show minimap", AutoSize = true };
@@ -47,6 +47,19 @@ internal sealed class SettingsForm : Form
         (HotkeyCombo.CtrlWin,   "Ctrl + Win"),
     };
 
+    // Grid presets: cols × rows with the home (main) cell at (homeCol, homeRow).
+    private static readonly (string label, int cols, int rows, int homeCol, int homeRow)[] Layouts =
+    {
+        ("1 × 2  — main bottom, extra above", 1, 2, 0, 1),
+        ("1 × 2  — main top, extra below",    1, 2, 0, 0),
+        ("2 × 1  — main left, extra right",   2, 1, 0, 0),
+        ("2 × 1  — main right, extra left",   2, 1, 1, 0),
+        ("2 × 2  (4 cells)",                  2, 2, 0, 1),
+        ("3 × 2  (6 cells)",                  3, 2, 0, 1),
+        ("2 × 3  (6 cells)",                  2, 3, 0, 2),
+        ("3 × 3  (9 cells, classic)",         3, 3, 1, 1),
+    };
+
     public SettingsForm(MinimapForm? minimap)
     {
         _minimap = minimap;
@@ -67,6 +80,7 @@ internal sealed class SettingsForm : Form
         catch { }
 
         foreach (var (_, lbl) in Hotkeys) { _hotkey.Items.Add(lbl); _mmHotkey.Items.Add(lbl); }
+        foreach (var l in Layouts) _layout.Items.Add(l.label);
 
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -82,6 +96,8 @@ internal sealed class SettingsForm : Form
         // GRID-MODE-ONLY (testing): grid mode is the only mode now, always on.
         // Span(_snap);
 
+        Row("Grid layout:", _layout);
+
         Header("Edge scrolling");
         Span(_edgeShift);
         // GRID-MODE-ONLY (testing): smooth scroll speed options hidden.
@@ -91,7 +107,6 @@ internal sealed class SettingsForm : Form
         Row("Start delay, ms:", _dwell);
         Row("Dead corners, px:", _corner);
         Row("Edge trigger zone, px:", _margin);
-        Row("Canvas size (× screen):", _canvas);
 
         // === Section: Minimap ===
         Header("Minimap");
@@ -204,7 +219,7 @@ internal sealed class SettingsForm : Form
         _dwell.Value = Clamp(_dwell, s.EdgeDwellMs);
         _corner.Value = Clamp(_corner, s.CornerDead);
         _margin.Value = Clamp(_margin, s.EdgeMargin);
-        _canvas.Value = Clamp(_canvas, s.CanvasFactor);
+        _layout.SelectedIndex = LayoutIndex(s);
 
         _mmVisible.Checked = _minimap?.Visible == true;
         _mmHotkey.SelectedIndex = HotkeyIndex(s.MinimapHotkey);
@@ -228,7 +243,17 @@ internal sealed class SettingsForm : Form
         s.EdgeDwellMs = (int)_dwell.Value;
         s.CornerDead = (int)_corner.Value;
         s.EdgeMargin = (int)_margin.Value;
-        s.CanvasFactor = (int)_canvas.Value;
+
+        // Grid layout — if it changed, bring windows home first so none get stranded
+        int li = _layout.SelectedIndex >= 0 ? _layout.SelectedIndex : Layouts.Length - 1;
+        var lay = Layouts[li];
+        bool gridChanged = s.GridCols != lay.cols || s.GridRows != lay.rows
+                        || s.HomeCol != lay.homeCol || s.HomeRow != lay.homeRow;
+        if (gridChanged) Program.ResetPositions();
+        s.GridCols = lay.cols;
+        s.GridRows = lay.rows;
+        s.HomeCol = lay.homeCol;
+        s.HomeRow = lay.homeRow;
 
         s.MinimapHotkey = HotkeyAt(_mmHotkey.SelectedIndex);
         int newW = (int)_mmWidth.Value;
@@ -256,5 +281,13 @@ internal sealed class SettingsForm : Form
 
     private static int HotkeyIndex(HotkeyCombo c) => Math.Max(0, Array.FindIndex(Hotkeys, h => h.combo == c));
     private static HotkeyCombo HotkeyAt(int i) => i >= 0 && i < Hotkeys.Length ? Hotkeys[i].combo : HotkeyCombo.CtrlShift;
+
+    private static int LayoutIndex(Settings s)
+    {
+        int i = Array.FindIndex(Layouts, l =>
+            l.cols == s.GridCols && l.rows == s.GridRows && l.homeCol == s.HomeCol && l.homeRow == s.HomeRow);
+        return i >= 0 ? i : Layouts.Length - 1; // default to 3×3
+    }
+
     private static decimal Clamp(NumericUpDown n, int v) => Math.Clamp(v, (int)n.Minimum, (int)n.Maximum);
 }

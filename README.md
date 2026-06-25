@@ -23,13 +23,15 @@ It lays your windows out across a **3 × 3 grid of off-screen regions** and lets
 between them — like having extra desktops, except it works by **moving the windows themselves**.
 No real Windows virtual desktops are created, so nothing is left behind when you quit.
 
-> Need more room? The grid size is configurable in **Settings → Canvas size (× screen)**:
-> ×1 = 3 × 3 (9 cells, default), ×2 = 5 × 5 (25 cells), ×3 = 7 × 7, and so on.
+> Pick the layout that suits you in **Settings → Grid layout** — from a simple 2-cell
+> setup (main + one extra, in any direction) up to 2×2, 3×2, 2×3 or the classic 3×3.
+> You choose how many cells and where the **main** screen sits.
 
 ## Features
 
 | | |
 |---|---|
+| 🧩 **Choose your layout** | Pick the grid in Settings — 2 cells (main + one extra, any side), 2×2, 3×2, 2×3 or the classic 3×3 — and where the main screen sits. |
 | 🧭 **Grid mode** | Push the mouse to a screen edge to jump exactly one full screen in that direction. |
 | 🗺️ **Minimap** | A small always-on-top overview of the whole canvas and where every window sits. |
 | 🔍 **Live previews** | Hover a minimap cell to see a real thumbnail of what is on it — even off-screen cells. |

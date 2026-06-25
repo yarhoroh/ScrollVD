@@ -20,19 +20,43 @@ internal sealed class PanEngine
     private readonly Dictionary<IntPtr, (int x, int y)> _origin = new();
 
     private long _offX, _offY;
-    private int _maxX, _maxY;
 
     // Saved canvas positions for each virtual desktop
     private readonly Dictionary<Guid, (long offX, long offY)> _desktopOffsets = new();
 
-    public (long offX, long offY, int maxX, int maxY) GetState() => (_offX, _offY, _maxX, _maxY);
+    /// <summary>
+    /// Current grid geometry from settings. maxOffX/maxOffY are the offsets that view
+    /// the top-left cell (col 0, row 0); the home cell sits at offset 0,0.
+    /// </summary>
+    private (int sw, int sh, int cols, int rows, long maxOffX, long maxOffY) Grid()
+    {
+        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        int cols = Math.Max(1, Config.Current.GridCols);
+        int rows = Math.Max(1, Config.Current.GridRows);
+        int homeCol = Math.Clamp(Config.Current.HomeCol, 0, cols - 1);
+        int homeRow = Math.Clamp(Config.Current.HomeRow, 0, rows - 1);
+        return (sw, sh, cols, rows, (long)homeCol * sw, (long)homeRow * sh);
+    }
+
+    // offX,offY plus the top-left view offsets (maxOffX = homeCol*sw, maxOffY = homeRow*sh).
+    public (long offX, long offY, long maxOffX, long maxOffY) GetState()
+    {
+        var g = Grid();
+        return (_offX, _offY, g.maxOffX, g.maxOffY);
+    }
+
+    // Cell counts and screen size — for the minimap's layout math.
+    public (int cols, int rows, int sw, int sh) GridInfo()
+    {
+        var g = Grid();
+        return (g.cols, g.rows, g.sw, g.sh);
+    }
 
     public PanEngine()
     {
         try { _vdm = (Native.IVirtualDesktopManager)new Native.VirtualDesktopManager(); }
         catch { _vdm = null; }
-        _maxX = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        _maxY = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
     }
 
     public Guid CurrentDesktopId()
@@ -113,10 +137,6 @@ internal sealed class PanEngine
     /// </summary>
     public void BeginGesture()
     {
-        int factor = Math.Max(1, Config.Current.CanvasFactor);
-        _maxX = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN) * factor;
-        _maxY = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN) * factor;
-
         _gesture.Clear();
         _gesturePos.Clear();
 
@@ -136,8 +156,11 @@ internal sealed class PanEngine
 
     public void Shift(int dx, int dy)
     {
-        int adx = (int)(Math.Clamp(_offX + dx, -_maxX, _maxX) - _offX);
-        int ady = (int)(Math.Clamp(_offY + dy, -_maxY, _maxY) - _offY);
+        var g = Grid();
+        long minOffX = g.maxOffX - (long)(g.cols - 1) * g.sw; // rightmost cell
+        long minOffY = g.maxOffY - (long)(g.rows - 1) * g.sh; // bottom cell
+        int adx = (int)(Math.Clamp(_offX + dx, minOffX, g.maxOffX) - _offX);
+        int ady = (int)(Math.Clamp(_offY + dy, minOffY, g.maxOffY) - _offY);
         if (adx == 0 && ady == 0) return;
 
         MoveBy(adx, ady);
@@ -216,12 +239,8 @@ internal sealed class PanEngine
         var map = new Dictionary<(int, int), List<IntPtr>>();
         int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
         int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        var (sw, sh, cols, rows, maxOffX, maxOffY) = Grid();
         if (sw <= 0 || sh <= 0) return map;
-
-        int cols = (int)Math.Round(2.0 * _maxX / sw) + 1;
-        int rows = (int)Math.Round(2.0 * _maxY / sh) + 1;
 
         var sb = new StringBuilder(64);
         Native.EnumWindows((h, _) =>
@@ -229,8 +248,8 @@ internal sealed class PanEngine
             if (!IsMovable(h, sb)) return true;
             if (!Native.GetWindowRect(h, out var r)) return true;
             int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
-            int col = (int)Math.Floor((cx - vx - (double)_offX + _maxX) / sw);
-            int row = (int)Math.Floor((cy - vy - (double)_offY + _maxY) / sh);
+            int col = (int)Math.Floor((cx - vx - (double)_offX + maxOffX) / sw);
+            int row = (int)Math.Floor((cy - vy - (double)_offY + maxOffY) / sh);
             if (col < 0 || col >= cols || row < 0 || row >= rows) return true;
 
             IntPtr icon = Native.GetClassLongPtr(h, Native.GCLP_HICONSM);
@@ -300,21 +319,20 @@ internal sealed class PanEngine
         if (!Native.GetWindowRect(hwnd, out var r)) return;
         int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
         int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        var (sw, sh, _, _, maxOffX, maxOffY) = Grid();
         if (sw <= 0 || sh <= 0) return;
 
         int relX = (((r.left - vx) % sw) + sw) % sw; // sub-cell position
         int relY = (((r.top - vy) % sh) + sh) % sh;
-        long offViewX = _maxX - (long)col * sw;
-        long offViewY = _maxY - (long)row * sh;
+        long offViewX = maxOffX - (long)col * sw;
+        long offViewY = maxOffY - (long)row * sh;
         int newLeft = (int)(vx + relX + (_offX - offViewX));
         int newTop = (int)(vy + relY + (_offY - offViewY));
         Native.SetWindowPos(hwnd, IntPtr.Zero, newLeft, newTop, 0, 0, MoveFlags);
 
         // If it landed on the cell we're currently looking at, bring it to front.
-        int viewCol = (int)Math.Round((_maxX - (double)_offX) / sw);
-        int viewRow = (int)Math.Round((_maxY - (double)_offY) / sh);
+        int viewCol = (int)Math.Round((maxOffX - (double)_offX) / sw);
+        int viewRow = (int)Math.Round((maxOffY - (double)_offY) / sh);
         if (col == viewCol && row == viewRow) ForceForeground(hwnd);
     }
 
@@ -327,13 +345,12 @@ internal sealed class PanEngine
     {
         int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
         int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        var (sw, sh, _, _, maxOffX, maxOffY) = Grid();
         if (sw <= 0 || sh <= 0) return null;
 
         // How much windows would shift on screen if we panned to view this cell.
-        long shiftX = (_maxX - (long)col * sw) - _offX;
-        long shiftY = (_maxY - (long)row * sh) - _offY;
+        long shiftX = (maxOffX - (long)col * sw) - _offX;
+        long shiftY = (maxOffY - (long)row * sh) - _offY;
 
         float scale = Math.Min(maxW / (float)sw, maxH / (float)sh);
         int tw = Math.Max(1, (int)(sw * scale));
@@ -388,11 +405,10 @@ internal sealed class PanEngine
     public void MoveWindowToCell(IntPtr hwnd, int col, int row, int origLeft, int origTop)
     {
         if (hwnd == IntPtr.Zero) return;
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-        // offset at which cell (col,row) is shown: leftmost cell at +maxX, rightmost at -maxX
-        long offViewX = _maxX - (long)col * sw;
-        long offViewY = _maxY - (long)row * sh;
+        var (sw, sh, _, _, maxOffX, maxOffY) = Grid();
+        // offset at which cell (col,row) is shown
+        long offViewX = maxOffX - (long)col * sw;
+        long offViewY = maxOffY - (long)row * sh;
         int dx = (int)(_offX - offViewX);
         int dy = (int)(_offY - offViewY);
         Native.SetWindowPos(hwnd, IntPtr.Zero, origLeft + dx, origTop + dy, 0, 0, MoveFlags);

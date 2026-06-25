@@ -157,39 +157,30 @@ internal sealed class MinimapForm : Form
         g.DrawPath(borderPen, bgPath);
 
         var (offX, offY, maxX, maxY) = _engine.GetState();
-        if (maxX <= 0 || maxY <= 0) return;
+        var (cols, rows, screenW, screenH) = _engine.GridInfo();
+        if (screenW <= 0 || screenH <= 0) return;
 
         int pad = 6;
         int mw = w - pad * 2, mh = h - pad * 2;
 
-        int screenW = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int screenH = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-
-        // Canvas = [-maxX .. maxX], viewport = screenW/screenH.
-        // Full range visible at any offX: from -maxX to maxX+screenW.
-        // totalCW = 2*maxX + screenW guarantees the viewport is always inside the map.
-        float totalCW = 2f * maxX + screenW;
-        float totalCH = 2f * maxY + screenH;
+        // The whole grid spans cols×rows cells; the viewport is one cell.
+        float totalCW = (float)cols * screenW;
+        float totalCH = (float)rows * screenH;
         float sx = mw / totalCW;
         float sy = mh / totalCH;
 
-        // Canvas grid — light lines
-        using var gridPen = new Pen(Color.FromArgb(30, 70, 100, 160), 0.5f);
-        int gridSteps = 4;
-        for (int i = 1; i < gridSteps; i++)
+        // Cell boundary lines
+        using var gridPen = new Pen(Color.FromArgb(40, 80, 110, 170), 0.6f);
+        for (int i = 1; i < cols; i++)
         {
-            float gx = pad + mw * i / gridSteps;
-            float gy = pad + mh * i / gridSteps;
+            float gx = pad + mw * i / cols;
             g.DrawLine(gridPen, gx, pad, gx, pad + mh);
+        }
+        for (int i = 1; i < rows; i++)
+        {
+            float gy = pad + mh * i / rows;
             g.DrawLine(gridPen, pad, gy, pad + mw, gy);
         }
-
-        // Origin point — cross
-        float ox = pad + maxX * sx;
-        float oy = pad + maxY * sy;
-        using var axisPen = new Pen(Color.FromArgb(50, 100, 140, 200), 0.7f);
-        g.DrawLine(axisPen, ox, pad, ox, pad + mh);
-        g.DrawLine(axisPen, pad, oy, pad + mw, oy);
 
         // Cells that contain windows: faint tint + the app icons in them
         // (recomputed ~every 300 ms; the icons themselves are cached).
@@ -213,8 +204,8 @@ internal sealed class MinimapForm : Form
         // Highlighted target cell while a window is dragged onto the minimap
         if (_hlCol >= 0 && _hlRow >= 0)
         {
-            var (cols, rows, cw, ch, padc) = CellLayout();
-            if (_hlCol < cols && _hlRow < rows)
+            var (hcols, hrows, cw, ch, padc) = CellLayout();
+            if (_hlCol < hcols && _hlRow < hrows)
             {
                 var hr = new RectangleF(padc + _hlCol * cw, padc + _hlRow * ch, cw, ch);
                 using var hlFill = new SolidBrush(Color.FromArgb(90, 120, 220, 130));
@@ -369,14 +360,10 @@ internal sealed class MinimapForm : Form
     // Grid layout: number of cells per axis and cell size in client px.
     private (int cols, int rows, float cw, float ch, int pad) CellLayout()
     {
-        var (_, _, maxX, maxY) = _engine.GetState();
-        int pad = 6;
-        int sw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int sh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-        int cols = sw > 0 ? (int)Math.Round(2.0 * maxX / sw) + 1 : 3;
-        int rows = sh > 0 ? (int)Math.Round(2.0 * maxY / sh) + 1 : 3;
+        var (cols, rows, _, _) = _engine.GridInfo();
         cols = Math.Max(1, cols);
         rows = Math.Max(1, rows);
+        int pad = 6;
         float cw = (ClientSize.Width - pad * 2) / (float)cols;
         float ch = (ClientSize.Height - pad * 2) / (float)rows;
         return (cols, rows, cw, ch, pad);
@@ -422,12 +409,11 @@ internal sealed class MinimapForm : Form
     private RectangleF GetViewportRect()
     {
         var (offX, offY, maxX, maxY) = _engine.GetState();
-        if (maxX <= 0 || maxY <= 0) return RectangleF.Empty;
+        var (cols, rows, screenW, screenH) = _engine.GridInfo();
+        if (screenW <= 0 || screenH <= 0) return RectangleF.Empty;
         int pad = 6;
-        int screenW = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int screenH = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-        float sx = (ClientSize.Width - pad * 2) / (2f * maxX + screenW);
-        float sy = (ClientSize.Height - pad * 2) / (2f * maxY + screenH);
+        float sx = (ClientSize.Width - pad * 2) / ((float)cols * screenW);
+        float sy = (ClientSize.Height - pad * 2) / ((float)rows * screenH);
         return new RectangleF(
             pad + (-offX + maxX) * sx,
             pad + (-offY + maxY) * sy,
@@ -489,13 +475,11 @@ internal sealed class MinimapForm : Form
         }
         else if (_vpDrag)
         {
-            var (_, _, maxX, maxY) = _engine.GetState();
-            if (maxX <= 0 || maxY <= 0) return;
+            var (cols, rows, screenW2, screenH2) = _engine.GridInfo();
+            if (screenW2 <= 0 || screenH2 <= 0) return;
             int pad = 6;
-            int screenW2 = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-            int screenH2 = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-            float sx = (ClientSize.Width - pad * 2) / (2f * maxX + screenW2);
-            float sy = (ClientSize.Height - pad * 2) / (2f * maxY + screenH2);
+            float sx = (ClientSize.Width - pad * 2) / ((float)cols * screenW2);
+            float sy = (ClientSize.Height - pad * 2) / ((float)rows * screenH2);
 
             // Delta in minimap px → delta in canvas units
             int dx = e.X - _vpDragStart.X;
@@ -601,17 +585,16 @@ internal sealed class MinimapForm : Form
     private void JumpViewport(Point miniPt)
     {
         var (_, _, maxX, maxY) = _engine.GetState();
-        if (maxX <= 0 || maxY <= 0) return;
+        var (cols, rows, screenW, screenH) = _engine.GridInfo();
+        if (screenW <= 0 || screenH <= 0) return;
 
-        int screenW = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int screenH = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
         int pad = 6;
         int mw = ClientSize.Width - pad * 2;
         int mh = ClientSize.Height - pad * 2;
 
         // Click point → canvas coordinate
-        float cx = (miniPt.X - pad) / (float)mw * (2 * maxX + screenW) - maxX;
-        float cy = (miniPt.Y - pad) / (float)mh * (2 * maxY + screenH) - maxY;
+        float cx = (miniPt.X - pad) / (float)mw * (cols * screenW) - maxX;
+        float cy = (miniPt.Y - pad) / (float)mh * (rows * screenH) - maxY;
 
         // Center the viewport on this point: offX = -(cx - screenW/2)
         long targetOffX = -(long)(cx - screenW / 2f);
