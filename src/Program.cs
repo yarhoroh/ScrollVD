@@ -13,11 +13,10 @@ internal static class Program
     private static Native.HookProc _hookProc = null!;
     private static IntPtr _hook;
     private static Native.WinEventProc _winEventProc = null!; // kept to prevent GC
-    private static IntPtr _winEventHook;
-    // DISABLED for now: auto-follow to a window + restoring its spot on un-minimize.
-    private static readonly bool _followOnRestore = false;
-    // Where a window sat (screen pos + pan offset) just before it was minimized
-    private static readonly Dictionary<IntPtr, (int left, int top, long offX, long offY)> _minimizedFrom = new();
+    private static IntPtr _winEventHookFg, _winEventHookMin;
+    private static readonly bool _pullOnActivate = true;
+    // Ignore the pull until this tick (focus fell to a neighbour after a minimize)
+    private static long _suppressPullUntil;
     private static System.Windows.Forms.Timer _timer = null!;
 
     private static Mode _mode = Mode.None;
@@ -98,10 +97,12 @@ internal static class Program
         _minimap = new MinimapForm(_engine);
         if (S.MinimapVisible) _minimap.Show();
 
-        // WinEvent hook: remember a window's spot on minimize, and pan the view to it
-        // (restoring its position if Windows moved it) when it's un-minimized.
+        // WinEvent hooks: follow the view to a window you activate / un-minimize.
+        // Two hooks (foreground + minimize range) to avoid the noisy events in between.
         _winEventProc = OnWinEvent;
-        _winEventHook = Native.SetWinEventHook(Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND,
+        _winEventHookFg = Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero, _winEventProc, 0, 0, Native.WINEVENT_OUTOFCONTEXT);
+        _winEventHookMin = Native.SetWinEventHook(Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND,
             IntPtr.Zero, _winEventProc, 0, 0, Native.WINEVENT_OUTOFCONTEXT);
 
         _timer = new System.Windows.Forms.Timer { Interval = TimerMs };
@@ -114,7 +115,8 @@ internal static class Program
         {
             _timer.Stop();
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
-            if (_winEventHook != IntPtr.Zero) Native.UnhookWinEvent(_winEventHook);
+            if (_winEventHookFg != IntPtr.Zero) Native.UnhookWinEvent(_winEventHookFg);
+            if (_winEventHookMin != IntPtr.Zero) Native.UnhookWinEvent(_winEventHookMin);
             _tray.Visible = false;
             _engine.Reset(allDesktops: true);
         };
@@ -324,46 +326,38 @@ internal static class Program
         }
     }
 
-    // Minimize: remember the window's spot. Un-minimize: put it back if Windows moved it,
-    // then pan the view to it (we never pull the window to us).
+    // When you activate / un-minimize a window that's off-screen on another cell, bring it
+    // onto your current screen (reliable — it never gets lost). Never on a focus change
+    // that merely fell to a neighbour right after a minimize.
     private static void OnWinEvent(IntPtr hook, uint evt, IntPtr hwnd,
         int idObject, int idChild, uint thread, uint time)
     {
-        if (!_followOnRestore) return; // disabled: no auto-follow / window repositioning
-        if (idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW = 0
-        var h = Native.GetAncestor(hwnd, Native.GA_ROOT);
+        if (!_pullOnActivate || idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW = 0
+        if (!S.Enabled || _mode == Mode.Grab) return;
+        long now = Environment.TickCount64;
 
+        // Minimizing: focus is about to fall to a neighbour — suppress the pull for it.
         if (evt == Native.EVENT_SYSTEM_MINIMIZESTART)
         {
-            // Record its screen position (before Windows can move it) + current pan offset
-            if (Native.GetWindowRect(h, out var r) && r.left > -30000)
-            {
-                var (offX, offY, _, _) = _engine.GetState();
-                _minimizedFrom[h] = (r.left, r.top, offX, offY);
-            }
+            _suppressPullUntil = now + 400;
             return;
         }
 
-        // EVENT_SYSTEM_MINIMIZEEND
-        if (!S.Enabled || _mode == Mode.Grab) { _minimizedFrom.Remove(h); return; }
-        if (!IsCandidateForScroll(h)) { _minimizedFrom.Remove(h); return; }
+        // A plain foreground change right after a minimize is the neighbour — ignore it.
+        if (evt == Native.EVENT_SYSTEM_FOREGROUND && now < _suppressPullUntil) return;
 
-        int col, row;
-        if (_minimizedFrom.TryGetValue(h, out var rec))
-        {
-            // Put it back on its cell (Windows may have dragged it onto the visible screen),
-            // clamped so it stays visible, then read which cell that is.
-            _minimizedFrom.Remove(h);
-            (col, row) = _engine.RestoreWindowSpot(h, rec.left, rec.top, rec.offX, rec.offY);
-        }
-        else
-        {
-            (col, row) = _engine.WindowCell(h);
-        }
+        var h = Native.GetAncestor(hwnd, Native.GA_ROOT);
+        if (!IsCandidateForScroll(h)) return;
 
-        var (ccol, crow) = _engine.CurrentCell();
-        if (col >= 0 && (col != ccol || row != crow))
-            ScrollToCell(col, row);
+        // Don't pull during a Windows virtual-desktop switch: that foreground change isn't a
+        // same-desktop activation, and pulling would yank the new desktop's window off its cell.
+        if (_engine.CurrentDesktopId() != _currentDesktopId) return;
+
+        // The window is already active; just move it onto the current screen if it's off it.
+        _engine.PullWindowToCurrentScreen(h, raise: false);
+
+        if (evt == Native.EVENT_SYSTEM_MINIMIZEEND)
+            _suppressPullUntil = now + 400; // ignore the FOREGROUND that follows
     }
 
     private static bool IsCandidateForScroll(IntPtr hWnd)

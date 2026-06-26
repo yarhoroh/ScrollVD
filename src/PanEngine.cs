@@ -85,8 +85,19 @@ internal sealed class PanEngine
 
     public Guid CurrentDesktopId()
     {
+        // Authoritative: the active desktop GUID Windows keeps in the registry. Independent
+        // of the foreground window (which sometimes has no/unknown desktop), so it's reliable.
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops");
+            if (key?.GetValue("CurrentVirtualDesktop") is byte[] b && b.Length == 16)
+                return new Guid(b);
+        }
+        catch { }
+
+        // Fallback: foreground window's desktop, then any visible window's.
         if (_vdm is null) return Guid.Empty;
-        // Fast path: foreground window
         try
         {
             var fg = Native.GetForegroundWindow();
@@ -94,7 +105,6 @@ internal sealed class PanEngine
                 return id;
         }
         catch { }
-        // Fallback: find the first visible normal window that has a desktop ID
         var sb = new System.Text.StringBuilder(64);
         Guid found = Guid.Empty;
         Native.EnumWindows((h, _) =>
@@ -245,7 +255,7 @@ internal sealed class PanEngine
     /// pull it onto the current screen keeping its sub-screen position. Returns true
     /// if it was moved. Only this one window moves; the global pan is untouched.
     /// </summary>
-    public bool PullWindowToCurrentScreen(IntPtr hwnd)
+    public bool PullWindowToCurrentScreen(IntPtr hwnd, bool raise = true)
     {
         if (hwnd == IntPtr.Zero) return false;
         if (Native.IsIconic(hwnd)) Native.ShowWindow(hwnd, Native.SW_RESTORE); // un-minimize first
@@ -259,13 +269,16 @@ internal sealed class PanEngine
         bool intersects = r.right > vx && r.left < vx + sw && r.bottom > vy && r.top < vy + sh;
         if (!intersects)
         {
-            int relX = (((r.left - vx) % sw) + sw) % sw; // wrap into [0, sw)
-            int relY = (((r.top - vy) % sh) + sh) % sh;
-            Native.SetWindowPos(hwnd, IntPtr.Zero, vx + relX, vy + relY, 0, 0, MoveFlags);
+            int width = r.right - r.left, height = r.bottom - r.top;
+            long relX = (((r.left - vx) % sw) + sw) % sw; // wrap into [0, sw)
+            long relY = (((r.top - vy) % sh) + sh) % sh;
+            // clamp so the window lands fully visible (oversized → anchor top-left)
+            relX = width <= sw ? Math.Clamp(relX, 0, sw - width) : 0;
+            relY = height <= sh ? Math.Clamp(relY, 0, sh - height) : 0;
+            Native.SetWindowPos(hwnd, IntPtr.Zero, (int)(vx + relX), (int)(vy + relY), 0, 0, MoveFlags);
         }
 
-        // Raise it so it's clearly visible — confirms the window was pulled here
-        ForceForeground(hwnd);
+        if (raise) ForceForeground(hwnd); // explicit pull (tray): bring it to front
         return !intersects;
     }
 
@@ -377,15 +390,21 @@ internal sealed class PanEngine
         if (!Native.GetWindowRect(hwnd, out var r)) return;
         int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
         int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        var (sw, sh, _, _, maxOffX, maxOffY) = Grid();
+        var (sw, sh, cols, rows, maxOffX, maxOffY) = Grid();
         if (sw <= 0 || sh <= 0) return;
+        col = Math.Clamp(col, 0, cols - 1);
+        row = Math.Clamp(row, 0, rows - 1);
 
-        int relX = (((r.left - vx) % sw) + sw) % sw; // sub-cell position
-        int relY = (((r.top - vy) % sh) + sh) % sh;
-        long offViewX = maxOffX - (long)col * sw;
-        long offViewY = maxOffY - (long)row * sh;
-        int newLeft = (int)(vx + relX + (_offX - offViewX));
-        int newTop = (int)(vy + relY + (_offY - offViewY));
+        int width = r.right - r.left, height = r.bottom - r.top;
+        // Sub-cell position, clamped so the window lands fully VISIBLE inside the cell
+        // (oversized windows anchor to the cell's top-left). Prevents "flew off" placement.
+        long relX = (((r.left - vx) % sw) + sw) % sw;
+        long relY = (((r.top - vy) % sh) + sh) % sh;
+        relX = width <= sw ? Math.Clamp(relX, 0, sw - width) : 0;
+        relY = height <= sh ? Math.Clamp(relY, 0, sh - height) : 0;
+
+        int newLeft = (int)(vx + _offX - maxOffX + (long)col * sw + relX);
+        int newTop = (int)(vy + _offY - maxOffY + (long)row * sh + relY);
         Native.SetWindowPos(hwnd, IntPtr.Zero, newLeft, newTop, 0, 0, MoveFlags);
 
         // If it landed on the cell we're currently looking at, bring it to front.
