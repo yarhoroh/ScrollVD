@@ -53,6 +53,30 @@ internal sealed class PanEngine
         return (g.cols, g.rows, g.sw, g.sh);
     }
 
+    /// <summary>Grid cell a window's centre is on, or (-1,-1) if outside the grid.</summary>
+    public (int col, int row) WindowCell(IntPtr hwnd)
+    {
+        if (!Native.GetWindowRect(hwnd, out var r)) return (-1, -1);
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        var (sw, sh, cols, rows, maxOffX, maxOffY) = Grid();
+        if (sw <= 0 || sh <= 0) return (-1, -1);
+        int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+        int col = (int)Math.Floor((cx - vx - (double)_offX + maxOffX) / sw);
+        int row = (int)Math.Floor((cy - vy - (double)_offY + maxOffY) / sh);
+        if (col < 0 || col >= cols || row < 0 || row >= rows) return (-1, -1);
+        return (col, row);
+    }
+
+    /// <summary>Grid cell currently in view.</summary>
+    public (int col, int row) CurrentCell()
+    {
+        var (sw, sh, _, _, maxOffX, maxOffY) = Grid();
+        if (sw <= 0 || sh <= 0) return (-1, -1);
+        return ((int)Math.Round((maxOffX - (double)_offX) / sw),
+                (int)Math.Round((maxOffY - (double)_offY) / sh));
+    }
+
     public PanEngine()
     {
         try { _vdm = (Native.IVirtualDesktopManager)new Native.VirtualDesktopManager(); }
@@ -170,6 +194,40 @@ internal sealed class PanEngine
 
     public void JumpTo(long targetOffX, long targetOffY)
         => Shift((int)(targetOffX - _offX), (int)(targetOffY - _offY));
+
+    /// <summary>
+    /// Put a window back on the cell it was on before minimizing (recorded screen pos +
+    /// pan offset), clamping its position so it stays VISIBLE inside that cell. Windows
+    /// bigger than the screen are anchored to the cell's top-left. Returns the cell.
+    /// </summary>
+    public (int col, int row) RestoreWindowSpot(IntPtr hwnd, int recLeft, int recTop, long recOffX, long recOffY)
+    {
+        if (!Native.GetWindowRect(hwnd, out var cur)) return (-1, -1);
+        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+        var (sw, sh, cols, rows, maxOffX, maxOffY) = Grid();
+        if (sw <= 0 || sh <= 0) return (-1, -1);
+
+        int width = cur.right - cur.left, height = cur.bottom - cur.top;
+
+        // Invariant canvas position recorded at minimize time
+        long gx = (recLeft - vx) - recOffX;
+        long gy = (recTop - vy) - recOffY;
+        int col = Math.Clamp((int)Math.Floor((double)(gx + maxOffX) / sw), 0, cols - 1);
+        int row = Math.Clamp((int)Math.Floor((double)(gy + maxOffY) / sh), 0, rows - 1);
+
+        // Sub-cell position, clamped so the window stays fully visible (or anchored if oversized)
+        long relX = (gx + maxOffX) - (long)col * sw;
+        long relY = (gy + maxOffY) - (long)row * sh;
+        relX = width <= sw ? Math.Clamp(relX, 0, sw - width) : 0;
+        relY = height <= sh ? Math.Clamp(relY, 0, sh - height) : 0;
+
+        int targetLeft = (int)(vx + _offX - maxOffX + (long)col * sw + relX);
+        int targetTop = (int)(vy + _offY - maxOffY + (long)row * sh + relY);
+        if (cur.left != targetLeft || cur.top != targetTop)
+            Native.SetWindowPos(hwnd, IntPtr.Zero, targetLeft, targetTop, 0, 0, MoveFlags);
+        return (col, row);
+    }
 
     /// <summary>
     /// Remove a window from the active gesture so the next pan/animation won't move it
@@ -494,40 +552,54 @@ internal sealed class PanEngine
     }
 
     /// <summary>
-    /// Safety net: if any window ended up outside the visible area, quietly bring it back.
+    /// Safety net: bring back any window whose title bar isn't reachable — off-screen,
+    /// or pushed below the work area (under the taskbar). Maximized windows are left alone.
     /// </summary>
     private void SnapOffScreenWindows(bool allDesktops = false)
     {
-        int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
-        int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
-        int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
-        int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+        // "Lost" = the title bar can't be grabbed inside the monitor's work area.
+        static bool Lost(Native.RECT r)
+        {
+            int w = Math.Max(1, r.right - r.left), ht = Math.Max(1, r.bottom - r.top);
+            var wa = Screen.GetWorkingArea(new System.Drawing.Rectangle(r.left, r.top, w, ht));
+            return r.top > wa.Bottom - 32      // title bar under the taskbar / below
+                || r.bottom < wa.Top + 32      // window entirely above the area
+                || r.right < wa.Left + 50      // off to the left
+                || r.left > wa.Right - 50;     // off to the right
+        }
 
-        bool OffScreen(Native.RECT r) =>
-            r.right < vx + 50 || r.bottom < vy + 50 || r.left > vx + vw - 50 || r.top > vy + vh - 50;
+        static (int x, int y) Home(Native.RECT r)
+        {
+            var wa = Screen.GetWorkingArea(new System.Drawing.Rectangle(r.left, r.top, 1, 1));
+            return (wa.Left + 80, wa.Top + 80);
+        }
 
         var sb = new StringBuilder(64);
         Native.EnumWindows((h, _) =>
         {
             if (!IsMovable(h, sb, anyDesktop: allDesktops, includeMinimized: true)) return true;
+            if (Native.IsZoomed(h)) return true; // maximized — always visible, leave it
 
-            // Minimized: fix the restore rectangle so it doesn't reappear off-screen.
+            // Minimized: fix the restore rectangle so it doesn't reappear lost.
             if (Native.IsIconic(h))
             {
                 var wp = new Native.WINDOWPLACEMENT { length = 44 };
-                if (Native.GetWindowPlacement(h, ref wp) && OffScreen(wp.rcNormalPosition))
+                if (Native.GetWindowPlacement(h, ref wp) && Lost(wp.rcNormalPosition))
                 {
                     var n = wp.rcNormalPosition;
-                    int w = n.right - n.left, ht = n.bottom - n.top;
-                    wp.rcNormalPosition = new Native.RECT { left = vx + 80, top = vy + 80, right = vx + 80 + w, bottom = vy + 80 + ht };
+                    var (hx, hy) = Home(n);
+                    wp.rcNormalPosition = new Native.RECT { left = hx, top = hy, right = hx + (n.right - n.left), bottom = hy + (n.bottom - n.top) };
                     Native.SetWindowPlacement(h, ref wp);
                 }
                 return true;
             }
 
             if (!Native.GetWindowRect(h, out var r)) return true;
-            if (OffScreen(r))
-                Native.SetWindowPos(h, IntPtr.Zero, vx + 80, vy + 80, 0, 0, MoveFlags);
+            if (Lost(r))
+            {
+                var (hx, hy) = Home(r);
+                Native.SetWindowPos(h, IntPtr.Zero, hx, hy, 0, 0, MoveFlags);
+            }
             return true;
         }, IntPtr.Zero);
     }
@@ -568,15 +640,27 @@ internal sealed class PanEngine
                 return false;
         }
 
-        // For a full reset we move windows on every virtual desktop, so skip this check.
-        if (!anyDesktop && _vdm is not null)
+        // Skip utility/tool windows that aren't real app windows (filters system popups).
+        long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+        if ((ex & Native.WS_EX_TOOLWINDOW) != 0 && (ex & Native.WS_EX_APPWINDOW) == 0)
+            return false;
+
+        // For a full reset we move windows on every virtual desktop, so skip these checks.
+        if (!anyDesktop)
         {
-            try
+            // Cloaked → on another virtual desktop (or a suspended UWP app). Most reliable filter.
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out int cloaked, 4) == 0 && cloaked != 0)
+                return false;
+
+            if (_vdm is not null)
             {
-                if (_vdm.IsWindowOnCurrentVirtualDesktop(h, out var on) == 0 && on == 0)
-                    return false;
+                try
+                {
+                    if (_vdm.IsWindowOnCurrentVirtualDesktop(h, out var on) == 0 && on == 0)
+                        return false;
+                }
+                catch { }
             }
-            catch { }
         }
         return true;
     }

@@ -12,6 +12,12 @@ internal static class Program
     private static PanEngine _engine = null!;
     private static Native.HookProc _hookProc = null!;
     private static IntPtr _hook;
+    private static Native.WinEventProc _winEventProc = null!; // kept to prevent GC
+    private static IntPtr _winEventHook;
+    // DISABLED for now: auto-follow to a window + restoring its spot on un-minimize.
+    private static readonly bool _followOnRestore = false;
+    // Where a window sat (screen pos + pan offset) just before it was minimized
+    private static readonly Dictionary<IntPtr, (int left, int top, long offX, long offY)> _minimizedFrom = new();
     private static System.Windows.Forms.Timer _timer = null!;
 
     private static Mode _mode = Mode.None;
@@ -92,6 +98,12 @@ internal static class Program
         _minimap = new MinimapForm(_engine);
         if (S.MinimapVisible) _minimap.Show();
 
+        // WinEvent hook: remember a window's spot on minimize, and pan the view to it
+        // (restoring its position if Windows moved it) when it's un-minimized.
+        _winEventProc = OnWinEvent;
+        _winEventHook = Native.SetWinEventHook(Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND,
+            IntPtr.Zero, _winEventProc, 0, 0, Native.WINEVENT_OUTOFCONTEXT);
+
         _timer = new System.Windows.Forms.Timer { Interval = TimerMs };
         _timer.Tick += OnTick;
         _timer.Start();
@@ -102,6 +114,7 @@ internal static class Program
         {
             _timer.Stop();
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
+            if (_winEventHook != IntPtr.Zero) Native.UnhookWinEvent(_winEventHook);
             _tray.Visible = false;
             _engine.Reset(allDesktops: true);
         };
@@ -292,9 +305,8 @@ internal static class Program
         if (!IsCandidateForScroll(fg)) return;
         _lastUserWindow = fg;
 
-        // If the window is on another cell (selected from the taskbar but it's off-screen),
-        // bring it to the current screen. Only this window moves.
-        _engine.PullWindowToCurrentScreen(fg);
+        // No auto move/scroll on plain activation — leave both the window and the view alone.
+        // (View only follows on un-minimize, handled by OnWinEvent below.)
 
         // Keep the minimap above the newly-activated window, then mark where it is
         if (_minimap is { Visible: true })
@@ -310,6 +322,48 @@ internal static class Program
                 _minimap.ShowMarker(cx, cy);
             }
         }
+    }
+
+    // Minimize: remember the window's spot. Un-minimize: put it back if Windows moved it,
+    // then pan the view to it (we never pull the window to us).
+    private static void OnWinEvent(IntPtr hook, uint evt, IntPtr hwnd,
+        int idObject, int idChild, uint thread, uint time)
+    {
+        if (!_followOnRestore) return; // disabled: no auto-follow / window repositioning
+        if (idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW = 0
+        var h = Native.GetAncestor(hwnd, Native.GA_ROOT);
+
+        if (evt == Native.EVENT_SYSTEM_MINIMIZESTART)
+        {
+            // Record its screen position (before Windows can move it) + current pan offset
+            if (Native.GetWindowRect(h, out var r) && r.left > -30000)
+            {
+                var (offX, offY, _, _) = _engine.GetState();
+                _minimizedFrom[h] = (r.left, r.top, offX, offY);
+            }
+            return;
+        }
+
+        // EVENT_SYSTEM_MINIMIZEEND
+        if (!S.Enabled || _mode == Mode.Grab) { _minimizedFrom.Remove(h); return; }
+        if (!IsCandidateForScroll(h)) { _minimizedFrom.Remove(h); return; }
+
+        int col, row;
+        if (_minimizedFrom.TryGetValue(h, out var rec))
+        {
+            // Put it back on its cell (Windows may have dragged it onto the visible screen),
+            // clamped so it stays visible, then read which cell that is.
+            _minimizedFrom.Remove(h);
+            (col, row) = _engine.RestoreWindowSpot(h, rec.left, rec.top, rec.offX, rec.offY);
+        }
+        else
+        {
+            (col, row) = _engine.WindowCell(h);
+        }
+
+        var (ccol, crow) = _engine.CurrentCell();
+        if (col >= 0 && (col != ccol || row != crow))
+            ScrollToCell(col, row);
     }
 
     private static bool IsCandidateForScroll(IntPtr hWnd)
@@ -473,6 +527,24 @@ internal static class Program
         _mode = Mode.Scroll;
         _engine.BeginGesture();
         if (exclude != IntPtr.Zero) _engine.ExcludeFromGesture(exclude);
+    }
+
+    /// <summary>Animate the view to grid cell (col,row) — follow-focus, doesn't move windows.</summary>
+    private static void ScrollToCell(int col, int row)
+    {
+        var (offX, offY, maxOffX, maxOffY) = _engine.GetState();
+        var (cols, rows, sw, sh) = _engine.GridInfo();
+        if (sw <= 0 || sh <= 0) return;
+
+        long minOffX = maxOffX - (long)(cols - 1) * sw;
+        long minOffY = maxOffY - (long)(rows - 1) * sh;
+        long tX = Math.Clamp(maxOffX - (long)col * sw, minOffX, maxOffX);
+        long tY = Math.Clamp(maxOffY - (long)row * sh, minOffY, maxOffY);
+        if (tX == offX && tY == offY) return;
+
+        _scrollTargetX = tX;
+        _scrollTargetY = tY;
+        if (_mode != Mode.Scroll) { _mode = Mode.Scroll; _engine.BeginGesture(); }
     }
 
     private static void EndEdge()

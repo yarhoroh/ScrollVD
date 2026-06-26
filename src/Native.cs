@@ -24,6 +24,22 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
 
+    // ---- WinEvent hook (window state changes, e.g. un-minimize) ----
+    public delegate void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    public const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+    public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int x; public int y; }
 
@@ -70,6 +86,10 @@ internal static class Native
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsZoomed(IntPtr hWnd); // maximized?
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int left, top, right, bottom; }
@@ -126,6 +146,19 @@ internal static class Native
 
     public const int GCLP_HICON = -14;
     public const int GCLP_HICONSM = -34;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+    public const int GWL_EXSTYLE = -20;
+    public const long WS_EX_TOOLWINDOW = 0x00000080;
+    public const long WS_EX_APPWINDOW = 0x00040000;
+
+    // Cloaked = window hidden because it's on another virtual desktop or a suspended UWP app
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    public const int DWMWA_CLOAKED = 14;
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
